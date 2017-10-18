@@ -1,6 +1,8 @@
+\define{versionidintro} \versionid $Id$
+
 \C{intro} Introduction to PuTTY
 
-PuTTY is a free SSH, Telnet and Rlogin client for Windows
+PuTTY is a free SSH, Telnet and Rlogin client for 32-bit Windows
 systems.
 
 \H{you-what} What are SSH, Telnet and Rlogin?

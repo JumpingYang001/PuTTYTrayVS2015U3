@@ -2,7 +2,6 @@
 
 #include "putty.h"
 
-#define SECURITY_WIN32
 #include <security.h>
 
 #include "pgssapi.h"
@@ -66,12 +65,11 @@ const char *gsslogmsg = NULL;
 
 static void ssh_sspi_bind_fns(struct ssh_gss_library *lib);
 
-struct ssh_gss_liblist *ssh_gss_setup(Conf *conf)
+struct ssh_gss_liblist *ssh_gss_setup(const Config *cfg)
 {
     HMODULE module;
     HKEY regkey;
     struct ssh_gss_liblist *list = snew(struct ssh_gss_liblist);
-    char *path;
 
     list->libraries = snewn(3, struct ssh_gss_library);
     list->nlibraries = 0;
@@ -91,7 +89,7 @@ struct ssh_gss_liblist *ssh_gss_setup(Conf *conf)
 	if (ret == ERROR_SUCCESS && type == REG_SZ) {
 	    buffer = snewn(size + 20, char);
 	    ret = RegQueryValueEx(regkey, "InstallDir", NULL,
-				  &type, (LPBYTE)buffer, &size);
+				  &type, buffer, &size);
 	    if (ret == ERROR_SUCCESS && type == REG_SZ) {
 		strcat(buffer, "\\bin\\gssapi32.dll");
 		module = LoadLibrary(buffer);
@@ -150,9 +148,8 @@ struct ssh_gss_liblist *ssh_gss_setup(Conf *conf)
      * Custom GSSAPI DLL.
      */
     module = NULL;
-    path = conf_get_filename(conf, CONF_ssh_gss_custom)->path;
-    if (*path) {
-	module = LoadLibrary(path);
+    if (cfg->ssh_gss_custom.path[0]) {
+	module = LoadLibrary(cfg->ssh_gss_custom.path);
     }
     if (module) {
 	struct ssh_gss_library *lib =
@@ -160,7 +157,7 @@ struct ssh_gss_liblist *ssh_gss_setup(Conf *conf)
 
 	lib->id = 2;
 	lib->gsslogmsg = dupprintf("Using GSSAPI from user-specified"
-				   " library '%s'", path);
+				   " library '%s'", cfg->ssh_gss_custom.path);
 	lib->handle = (void *)module;
 
 #define BIND_GSS_FN(name) \
@@ -355,7 +352,7 @@ static Ssh_gss_stat ssh_sspi_display_status(struct ssh_gss_library *lib,
 					    Ssh_gss_ctx ctx, Ssh_gss_buf *buf)
 {
     winSsh_gss_ctx *winctx = (winSsh_gss_ctx *) ctx;
-    const char *msg;
+    char *msg;
 
     if (winctx == NULL) return SSH_GSS_FAILURE;
 

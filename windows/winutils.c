@@ -94,7 +94,7 @@ void filereq_free(filereq *state)
 /* Callback function to launch context help. */
 static VOID CALLBACK message_box_help_callback(LPHELPINFO lpHelpInfo)
 {
-    const char *context = NULL;
+    char *context = NULL;
 #define CHECK_CTX(name) \
     do { \
 	if (lpHelpInfo->dwContextId == WINHELP_CTXID_ ## name) \
@@ -142,12 +142,11 @@ void pgp_fingerprints(void)
 		"one. See the manual for more information.\n"
 		"(Note: these fingerprints have nothing to do with SSH!)\n"
 		"\n"
-                "PuTTY Master Key as of 2015 (RSA, 4096-bit):\n"
-                "  " PGP_MASTER_KEY_FP "\n\n"
-                "Original PuTTY Master Key (RSA, 1024-bit):\n"
-                "  " PGP_RSA_MASTER_KEY_FP "\n"
-                "Original PuTTY Master Key (DSA, 1024-bit):\n"
-                "  " PGP_DSA_MASTER_KEY_FP "\n"
+		"PuTTY Master Key (RSA), 1024-bit:\n"
+		"  " PGP_RSA_MASTER_KEY_FP "\n"
+		"PuTTY Master Key (DSA), 1024-bit:\n"
+		"  " PGP_DSA_MASTER_KEY_FP "\n"
+                "\n"
                 "PuTTYTray is signed by the unrelated:\n"
                 "Chris West (Faux) <gpg@goeswhere.com>:\n"
                 "  408A E4F1 4EA7 33EF 1265  82C1 B195 E1C4 779B A9B2\n",
@@ -156,31 +155,12 @@ void pgp_fingerprints(void)
 }
 
 /*
- * Handy wrapper around GetDlgItemText which doesn't make you invent
- * an arbitrary length limit on the output string. Returned string is
- * dynamically allocated; caller must free.
- */
-char *GetDlgItemText_alloc(HWND hwnd, int id)
-{
-    char *ret = NULL;
-    int size = 0;
-
-    do {
-	size = size * 4 / 3 + 512;
-	ret = sresize(ret, size, char);
-	GetDlgItemText(hwnd, id, ret, size);
-    } while (!memchr(ret, '\0', size-1));
-
-    return ret;
-}
-
-/*
- * Split a complete command line into argc/argv, attempting to do it
- * exactly the same way the Visual Studio C library would do it (so
- * that our console utilities, which receive argc and argv already
- * broken apart by the C library, will have their command lines
- * processed in the same way as the GUI utilities which get a whole
- * command line and must call this function).
+ * Split a complete command line into argc/argv, attempting to do
+ * it exactly the same way Windows itself would do it (so that
+ * console utilities, which receive argc and argv from Windows,
+ * will have their command lines processed in the same way as GUI
+ * utilities which get a whole command line and must break it
+ * themselves).
  * 
  * Does not modify the input command line.
  * 
@@ -201,17 +181,7 @@ void split_into_argv(char *cmdline, int *argc, char ***argv,
     int outputargc;
 
     /*
-     * These argument-breaking rules apply to Visual Studio 7, which
-     * is currently the compiler expected to be used for PuTTY. Visual
-     * Studio 10 has different rules, lacking the curious mod 3
-     * behaviour of consecutive quotes described below; I presume they
-     * fixed a bug. As and when we migrate to a newer compiler, we'll
-     * have to adjust this to match; however, for the moment we
-     * faithfully imitate in our GUI utilities what our CLI utilities
-     * can't be prevented from doing.
-     *
-     * When I investigated this, at first glance the rules appeared to
-     * be:
+     * At first glance the rules appeared to be:
      *
      *  - Single quotes are not special characters.
      *
@@ -368,7 +338,7 @@ void split_into_argv(char *cmdline, int *argc, char ***argv,
 
 		    if (quotes > 0) {
 			/* Outside a quote segment, a quote starts one. */
-			if (!quote) quotes--;
+			if (!quote) quotes--, quote = 1;
 
 			/* Now we produce (n+1)/3 literal quotes... */
 			for (i = 3; i <= quotes+1; i += 3) *q++ = '"';

@@ -35,7 +35,7 @@ struct cmdline_saved_param {
 };
 struct cmdline_saved_param_set {
     struct cmdline_saved_param *params;
-    size_t nsaved, savesize;
+    int nsaved, savesize;
 };
 
 /*
@@ -44,15 +44,15 @@ struct cmdline_saved_param_set {
  */
 static struct cmdline_saved_param_set saves[NPRIORITIES];
 
-static void cmdline_save_param(const char *p, const char *value, int pri)
+static void cmdline_save_param(char *p, char *value, int pri)
 {
     if (saves[pri].nsaved >= saves[pri].savesize) {
 	saves[pri].savesize = saves[pri].nsaved + 32;
 	saves[pri].params = sresize(saves[pri].params, saves[pri].savesize,
 				    struct cmdline_saved_param);
     }
-    saves[pri].params[saves[pri].nsaved].p = dupstr(p);
-    saves[pri].params[saves[pri].nsaved].value = dupstr(value);
+    saves[pri].params[saves[pri].nsaved].p = p;
+    saves[pri].params[saves[pri].nsaved].value = value;
     saves[pri].nsaved++;
 }
 
@@ -63,7 +63,7 @@ void cmdline_cleanup(void)
     int pri;
 
     if (cmdline_password) {
-	smemclr(cmdline_password, strlen(cmdline_password));
+	memset(cmdline_password, 0, strlen(cmdline_password));
 	sfree(cmdline_password);
 	cmdline_password = NULL;
     }
@@ -85,8 +85,8 @@ void cmdline_cleanup(void)
  * return means that we aren't capable of processing the prompt and
  * someone else should do it.
  */
-int cmdline_get_passwd_input(prompts_t *p, const unsigned char *in, int inlen)
-{
+int cmdline_get_passwd_input(prompts_t *p, unsigned char *in, int inlen) {
+
     static int tried_once = 0;
 
     /*
@@ -105,12 +105,15 @@ int cmdline_get_passwd_input(prompts_t *p, const unsigned char *in, int inlen)
     if (tried_once)
 	return 0;
 
-    prompt_set_result(p->prompts[0], cmdline_password);
-    smemclr(cmdline_password, strlen(cmdline_password));
+    strncpy(p->prompts[0]->result, cmdline_password,
+	    p->prompts[0]->result_len);
+    p->prompts[0]->result[p->prompts[0]->result_len-1] = '\0';
+    memset(cmdline_password, 0, strlen(cmdline_password));
     sfree(cmdline_password);
     cmdline_password = NULL;
     tried_once = 1;
     return 1;
+
 }
 
 /*
@@ -125,7 +128,7 @@ int cmdline_get_passwd_input(prompts_t *p, const unsigned char *in, int inlen)
  */
 int cmdline_tooltype = 0;
 
-static int cmdline_check_unavailable(int flag, const char *p)
+static int cmdline_check_unavailable(int flag, char *p)
 {
     if (cmdline_tooltype & flag) {
 	cmdline_error("option \"%s\" not available in this tool", p);
@@ -159,8 +162,7 @@ static int cmdline_check_unavailable(int flag, const char *p)
     if (need_save < 0) return x; \
 } while (0)
 
-int cmdline_process_param(const char *p, char *value,
-                          int need_save, Conf *conf)
+int cmdline_process_param(char *p, char *value, int need_save, Config *cfg)
 {
     int ret = 0;
 
@@ -168,80 +170,68 @@ int cmdline_process_param(const char *p, char *value,
 	RETURN(2);
 	/* This parameter must be processed immediately rather than being
 	 * saved. */
-	do_defaults(value, conf);
+	do_defaults(value, cfg);
 	loaded_session = TRUE;
 	cmdline_session_name = dupstr(value);
 	return 2;
     }
-
-    if (!strcmp(p, "-loadfile") || !strcmp(p, "-file") || !strcmp(p, "-fileload")) {
-        RETURN(2);
-        do_defaults_file(value, conf);
-        loaded_session = TRUE;
-        return 2;
+    
+	/*
+	 * HACK: PuttyTray / PuTTY File
+	 * Load file based session from commandline
+	 */
+	if (!strcmp(p, "-loadfile") || !strcmp(p, "-file") || !strcmp(p, "-fileload")) {
+	RETURN(2);
+	do_defaults_file(value, cfg);
+	loaded_session = TRUE;
+	return 2;
     }
 
-    if (!strcmp(p, "-ssh")) {
+	if (!strcmp(p, "-ssh")) {
 	RETURN(1);
 	UNAVAILABLE_IN(TOOLTYPE_FILETRANSFER | TOOLTYPE_NONNETWORK);
 	SAVEABLE(0);
-	default_protocol = PROT_SSH;
-	default_port = 22;
-	conf_set_int(conf, CONF_protocol, default_protocol);
-	conf_set_int(conf, CONF_port, default_port);
+	default_protocol = cfg->protocol = PROT_SSH;
+	default_port = cfg->port = 22;
 	return 1;
     }
     if (!strcmp(p, "-telnet")) {
 	RETURN(1);
 	UNAVAILABLE_IN(TOOLTYPE_FILETRANSFER | TOOLTYPE_NONNETWORK);
 	SAVEABLE(0);
-	default_protocol = PROT_TELNET;
-	default_port = 23;
-	conf_set_int(conf, CONF_protocol, default_protocol);
-	conf_set_int(conf, CONF_port, default_port);
+	default_protocol = cfg->protocol = PROT_TELNET;
+	default_port = cfg->port = 23;
 	return 1;
     }
     if (!strcmp(p, "-rlogin")) {
 	RETURN(1);
 	UNAVAILABLE_IN(TOOLTYPE_FILETRANSFER | TOOLTYPE_NONNETWORK);
 	SAVEABLE(0);
-	default_protocol = PROT_RLOGIN;
-	default_port = 513;
-	conf_set_int(conf, CONF_protocol, default_protocol);
-	conf_set_int(conf, CONF_port, default_port);
+	default_protocol = cfg->protocol = PROT_RLOGIN;
+	default_port = cfg->port = 513;
 	return 1;
     }
     if (!strcmp(p, "-raw")) {
 	RETURN(1);
 	UNAVAILABLE_IN(TOOLTYPE_FILETRANSFER | TOOLTYPE_NONNETWORK);
 	SAVEABLE(0);
-	default_protocol = PROT_RAW;
-	conf_set_int(conf, CONF_protocol, default_protocol);
+	default_protocol = cfg->protocol = PROT_RAW;
     }
     if (!strcmp(p, "-adb")) {
-        RETURN(1);
-        UNAVAILABLE_IN(TOOLTYPE_FILETRANSFER | TOOLTYPE_NONNETWORK);
-        SAVEABLE(0);
-        default_protocol = PROT_ADB;
-        conf_set_int(conf, CONF_protocol, default_protocol);
+	RETURN(1);
+	UNAVAILABLE_IN(TOOLTYPE_FILETRANSFER | TOOLTYPE_NONNETWORK);
+	SAVEABLE(0);
+	default_protocol = cfg->protocol = PROT_ADB;
     }    
     if (!strcmp(p, "-serial")) {
 	RETURN(1);
 	/* Serial is not NONNETWORK in an odd sense of the word */
 	UNAVAILABLE_IN(TOOLTYPE_FILETRANSFER | TOOLTYPE_NONNETWORK);
 	SAVEABLE(0);
-	default_protocol = PROT_SERIAL;
-	conf_set_int(conf, CONF_protocol, default_protocol);
-	/* The host parameter will already be loaded into CONF_host,
-	 * so copy it across */
-	conf_set_str(conf, CONF_serline, conf_get_str(conf, CONF_host));
-    }
-    if (!strcmp(p, "-cygterm")) {
-        RETURN(1);
-        UNAVAILABLE_IN(TOOLTYPE_FILETRANSFER | TOOLTYPE_NONNETWORK);
-        default_protocol = PROT_CYGTERM;
-        conf_set_int(conf, CONF_protocol, default_protocol);
-        return 1;
+	default_protocol = cfg->protocol = PROT_SERIAL;
+	/* The host parameter will already be loaded into cfg->host, so copy it across */
+	strncpy(cfg->serline, cfg->host, sizeof(cfg->serline) - 1);
+	cfg->serline[sizeof(cfg->serline) - 1] = '\0';
     }
     if (!strcmp(p, "-v")) {
 	RETURN(1);
@@ -251,38 +241,41 @@ int cmdline_process_param(const char *p, char *value,
 	RETURN(2);
 	UNAVAILABLE_IN(TOOLTYPE_NONNETWORK);
 	SAVEABLE(0);
-	conf_set_str(conf, CONF_username, value);
+	strncpy(cfg->username, value, sizeof(cfg->username));
+	cfg->username[sizeof(cfg->username) - 1] = '\0';
     }
     if (!strcmp(p, "-loghost")) {
 	RETURN(2);
 	UNAVAILABLE_IN(TOOLTYPE_NONNETWORK);
 	SAVEABLE(0);
-	conf_set_str(conf, CONF_loghost, value);
-    }
-    if (!strcmp(p, "-hostkey")) {
-        char *dup;
-	RETURN(2);
-	UNAVAILABLE_IN(TOOLTYPE_NONNETWORK);
-	SAVEABLE(0);
-        dup = dupstr(value);
-        if (!validate_manual_hostkey(dup)) {
-            cmdline_error("'%s' is not a valid format for a manual host "
-                          "key specification", value);
-            sfree(dup);
-            return ret;
-        }
-	conf_set_str_str(conf, CONF_ssh_manual_hostkeys, dup, "");
-        sfree(dup);
+	strncpy(cfg->loghost, value, sizeof(cfg->loghost));
+	cfg->loghost[sizeof(cfg->loghost) - 1] = '\0';
     }
     if ((!strcmp(p, "-L") || !strcmp(p, "-R") || !strcmp(p, "-D"))) {
-	char type, *q, *qq, *key, *val;
+	char *fwd, *ptr, *q, *qq;
+	int dynamic, i=0;
 	RETURN(2);
 	UNAVAILABLE_IN(TOOLTYPE_FILETRANSFER | TOOLTYPE_NONNETWORK);
 	SAVEABLE(0);
-	if (strcmp(p, "-D")) {
+	dynamic = !strcmp(p, "-D");
+	fwd = value;
+	ptr = cfg->portfwd;
+	/* if existing forwards, find end of list */
+	while (*ptr) {
+	    while (*ptr)
+		ptr++;
+	    ptr++;
+	}
+	i = ptr - cfg->portfwd;
+	ptr[0] = p[1];  /* insert a 'L', 'R' or 'D' at the start */
+	ptr++;
+	if (1 + strlen(fwd) + 2 > sizeof(cfg->portfwd) - i) {
+	    cmdline_error("out of space for port forwardings");
+	    return ret;
+	}
+	strncpy(ptr, fwd, sizeof(cfg->portfwd) - i - 2);
+	if (!dynamic) {
 	    /*
-             * For -L or -R forwarding types:
-             *
 	     * We expect _at least_ two colons in this string. The
 	     * possible formats are `sourceport:desthost:destport',
 	     * or `sourceip:sourceport:desthost:destport' if you're
@@ -290,47 +283,19 @@ int cmdline_process_param(const char *p, char *value,
 	     * replace the one between source and dest with a \t;
 	     * this means we must find the second-to-last colon in
 	     * the string.
-	     *
-	     * (This looks like a foolish way of doing it given the
-	     * existence of strrchr, but it's more efficient than
-	     * two strrchrs - not to mention that the second strrchr
-	     * would require us to modify the input string!)
 	     */
-
-            type = p[1];               /* 'L' or 'R' */
-
-	    q = qq = host_strchr(value, ':');
+	    q = qq = strchr(ptr, ':');
 	    while (qq) {
-		char *qqq = host_strchr(qq+1, ':');
+		char *qqq = strchr(qq+1, ':');
 		if (qqq)
 		    q = qq;
 		qq = qqq;
 	    }
-
-	    if (!q) {
-		cmdline_error("-%c expects at least two colons in its"
-			      " argument", type);
-		return ret;
-	    }
-
-	    key = dupprintf("%c%.*s", type, (int)(q - value), value);
-	    val = dupstr(q+1);
-	} else {
-            /*
-             * Dynamic port forwardings are entered under the same key
-             * as if they were local (because they occupy the same
-             * port space - a local and a dynamic forwarding on the
-             * same local port are mutually exclusive), with the
-             * special value "D" (which can be distinguished from
-             * anything in the ordinary -L case by containing no
-             * colon).
-             */
-	    key = dupprintf("L%s", value);
-	    val = dupstr("D");
+	    if (q) *q = '\t';	       /* replace second-last colon with \t */
 	}
-	conf_set_str_str(conf, CONF_portfwd, key, val);
-	sfree(key);
-	sfree(val);
+	cfg->portfwd[sizeof(cfg->portfwd) - 1] = '\0';
+	cfg->portfwd[sizeof(cfg->portfwd) - 2] = '\0';
+	ptr[strlen(ptr)+1] = '\000';    /* append 2nd '\000' */
     }
     if ((!strcmp(p, "-nc"))) {
 	char *host, *portp;
@@ -339,21 +304,24 @@ int cmdline_process_param(const char *p, char *value,
 	UNAVAILABLE_IN(TOOLTYPE_FILETRANSFER | TOOLTYPE_NONNETWORK);
 	SAVEABLE(0);
 
-	portp = host_strchr(value, ':');
-	if (!portp) {
+	host = portp = value;
+	while (*portp && *portp != ':')
+	    portp++;
+	if (*portp) {
+	    unsigned len = portp - host;
+	    if (len >= sizeof(cfg->ssh_nc_host))
+		len = sizeof(cfg->ssh_nc_host) - 1;
+	    memcpy(cfg->ssh_nc_host, value, len);
+	    cfg->ssh_nc_host[len] = '\0';
+	    cfg->ssh_nc_port = atoi(portp+1);
+	} else {
 	    cmdline_error("-nc expects argument of form 'host:port'");
 	    return ret;
 	}
-
-	host = dupprintf("%.*s", (int)(portp - value), value);
-	conf_set_str(conf, CONF_ssh_nc_host, host);
-	conf_set_int(conf, CONF_ssh_nc_port, atoi(portp + 1));
-        sfree(host);
     }
     if (!strcmp(p, "-m")) {
-        const char *filename;
-        char *command;
-        size_t cmdlen, cmdsize;
+	char *filename, *command;
+	int cmdlen, cmdsize;
 	FILE *fp;
 	int c, d;
 
@@ -367,7 +335,8 @@ int cmdline_process_param(const char *p, char *value,
 	command = NULL;
 	fp = fopen(filename, "r");
 	if (!fp) {
-	    cmdline_error("unable to open command file \"%s\"", filename);
+	    cmdline_error("unable to open command "
+			  "file \"%s\"", filename);
 	    return ret;
 	}
 	do {
@@ -379,19 +348,18 @@ int cmdline_process_param(const char *p, char *value,
 		cmdsize = cmdlen + 512;
 		command = sresize(command, cmdsize, char);
 	    }
-            command[cmdlen++] = (char)d;
+	    command[cmdlen++] = d;
 	} while (c != EOF);
+	cfg->remote_cmd_ptr = command;
+	cfg->remote_cmd_ptr2 = NULL;
+	cfg->nopty = TRUE;      /* command => no terminal */
 	fclose(fp);
-	conf_set_str(conf, CONF_remote_cmd, command);
-	conf_set_str(conf, CONF_remote_cmd2, "");
-	conf_set_int(conf, CONF_nopty, TRUE);   /* command => no terminal */
-	sfree(command);
     }
     if (!strcmp(p, "-P")) {
 	RETURN(2);
 	UNAVAILABLE_IN(TOOLTYPE_NONNETWORK);
 	SAVEABLE(1);		       /* lower priority than -ssh,-telnet */
-	conf_set_int(conf, CONF_port, atoi(value));
+	cfg->port = atoi(value);
     }
     if (!strcmp(p, "-pw")) {
 	RETURN(2);
@@ -399,7 +367,7 @@ int cmdline_process_param(const char *p, char *value,
 	SAVEABLE(1);
 	/* We delay evaluating this until after the protocol is decided,
 	 * so that we can warn if it's of no use with the selected protocol */
-	if (conf_get_int(conf, CONF_protocol) != PROT_SSH)
+	if (cfg->protocol != PROT_SSH)
 	    cmdline_error("the -pw option can only be used with the "
 			  "SSH protocol");
 	else {
@@ -407,7 +375,7 @@ int cmdline_process_param(const char *p, char *value,
 	    /* Assuming that `value' is directly from argv, make a good faith
 	     * attempt to trample it, to stop it showing up in `ps' output
 	     * on Unix-like systems. Not guaranteed, of course. */
-	    smemclr(value, strlen(value));
+	    memset(value, 0, strlen(value));
 	}
     }
 
@@ -416,189 +384,172 @@ int cmdline_process_param(const char *p, char *value,
 	RETURN(1);
 	UNAVAILABLE_IN(TOOLTYPE_NONNETWORK);
 	SAVEABLE(0);
-	conf_set_int(conf, CONF_tryagent, TRUE);
+	cfg->tryagent = TRUE;
     }
     if (!strcmp(p, "-noagent") || !strcmp(p, "-nopagent") ||
 	!strcmp(p, "-nopageant")) {
 	RETURN(1);
 	UNAVAILABLE_IN(TOOLTYPE_NONNETWORK);
 	SAVEABLE(0);
-	conf_set_int(conf, CONF_tryagent, FALSE);
+	cfg->tryagent = FALSE;
     }
 
     if (!strcmp(p, "-A")) {
 	RETURN(1);
 	UNAVAILABLE_IN(TOOLTYPE_FILETRANSFER | TOOLTYPE_NONNETWORK);
 	SAVEABLE(0);
-	conf_set_int(conf, CONF_agentfwd, 1);
+	cfg->agentfwd = 1;
     }
     if (!strcmp(p, "-a")) {
 	RETURN(1);
 	UNAVAILABLE_IN(TOOLTYPE_FILETRANSFER | TOOLTYPE_NONNETWORK);
 	SAVEABLE(0);
-	conf_set_int(conf, CONF_agentfwd, 0);
+	cfg->agentfwd = 0;
     }
 
     if (!strcmp(p, "-X")) {
 	RETURN(1);
 	UNAVAILABLE_IN(TOOLTYPE_FILETRANSFER | TOOLTYPE_NONNETWORK);
 	SAVEABLE(0);
-	conf_set_int(conf, CONF_x11_forward, 1);
+	cfg->x11_forward = 1;
     }
     if (!strcmp(p, "-x")) {
 	RETURN(1);
 	UNAVAILABLE_IN(TOOLTYPE_FILETRANSFER | TOOLTYPE_NONNETWORK);
 	SAVEABLE(0);
-	conf_set_int(conf, CONF_x11_forward, 0);
+	cfg->x11_forward = 0;
     }
 
     if (!strcmp(p, "-t")) {
 	RETURN(1);
 	UNAVAILABLE_IN(TOOLTYPE_FILETRANSFER | TOOLTYPE_NONNETWORK);
 	SAVEABLE(1);	/* lower priority than -m */
-	conf_set_int(conf, CONF_nopty, 0);
+	cfg->nopty = 0;
     }
     if (!strcmp(p, "-T")) {
 	RETURN(1);
 	UNAVAILABLE_IN(TOOLTYPE_FILETRANSFER | TOOLTYPE_NONNETWORK);
 	SAVEABLE(1);
-	conf_set_int(conf, CONF_nopty, 1);
+	cfg->nopty = 1;
     }
 
     if (!strcmp(p, "-N")) {
 	RETURN(1);
 	UNAVAILABLE_IN(TOOLTYPE_FILETRANSFER | TOOLTYPE_NONNETWORK);
 	SAVEABLE(0);
-	conf_set_int(conf, CONF_ssh_no_shell, 1);
+	cfg->ssh_no_shell = 1;
     }
 
     if (!strcmp(p, "-C")) {
 	RETURN(1);
 	UNAVAILABLE_IN(TOOLTYPE_NONNETWORK);
 	SAVEABLE(0);
-	conf_set_int(conf, CONF_compression, 1);
+	cfg->compression = 1;
     }
 
     if (!strcmp(p, "-1")) {
 	RETURN(1);
 	UNAVAILABLE_IN(TOOLTYPE_NONNETWORK);
 	SAVEABLE(0);
-	conf_set_int(conf, CONF_sshprot, 0);   /* ssh protocol 1 only */
+	cfg->sshprot = 0;	       /* ssh protocol 1 only */
     }
     if (!strcmp(p, "-2")) {
 	RETURN(1);
 	UNAVAILABLE_IN(TOOLTYPE_NONNETWORK);
 	SAVEABLE(0);
-	conf_set_int(conf, CONF_sshprot, 3);   /* ssh protocol 2 only */
+	cfg->sshprot = 3;	       /* ssh protocol 2 only */
     }
 
     if (!strcmp(p, "-i")) {
-	Filename *fn;
 	RETURN(2);
 	UNAVAILABLE_IN(TOOLTYPE_NONNETWORK);
 	SAVEABLE(0);
-	fn = filename_from_str(value);
-	conf_set_filename(conf, CONF_keyfile, fn);
-        filename_free(fn);
+	cfg->keyfile = filename_from_str(value);
     }
 
     if (!strcmp(p, "-4") || !strcmp(p, "-ipv4")) {
 	RETURN(1);
 	SAVEABLE(1);
-	conf_set_int(conf, CONF_addressfamily, ADDRTYPE_IPV4);
+	cfg->addressfamily = ADDRTYPE_IPV4;
     }
     if (!strcmp(p, "-6") || !strcmp(p, "-ipv6")) {
 	RETURN(1);
 	SAVEABLE(1);
-	conf_set_int(conf, CONF_addressfamily, ADDRTYPE_IPV6);
+	cfg->addressfamily = ADDRTYPE_IPV6;
     }
-
-    if (!strcmp(p, "-log")) {
-        RETURN(2);
-        SAVEABLE(1);
-        UNAVAILABLE_IN(TOOLTYPE_NONNETWORK);
-        conf_set_filename(conf, CONF_logfilename, filename_from_str(value));
-        if (conf_get_int(conf, CONF_logtype) == LGTYP_NONE) // Force out type only if set to none
-            conf_set_int(conf, CONF_logtype, LGTYP_ASCII);
-    }
-
-    if (!strcmp(p, "-notrans")) {
-        RETURN(1);
-        SAVEABLE(1);
-        UNAVAILABLE_IN(TOOLTYPE_FILETRANSFER | TOOLTYPE_NONNETWORK);
-        conf_set_int(conf, CONF_transparency, 255);
-    }
-
-    if (!strcmp(p, "-title")) {
-        RETURN(2);
-        SAVEABLE(1);
-        UNAVAILABLE_IN(TOOLTYPE_FILETRANSFER | TOOLTYPE_NONNETWORK);
-        conf_set_str( conf, CONF_wintitle, value);
-    }
-
     if (!strcmp(p, "-sercfg")) {
 	char* nextitem;
 	RETURN(2);
 	UNAVAILABLE_IN(TOOLTYPE_FILETRANSFER | TOOLTYPE_NONNETWORK);
 	SAVEABLE(1);
-	if (conf_get_int(conf, CONF_protocol) != PROT_SERIAL)
+	if (cfg->protocol != PROT_SERIAL)
 	    cmdline_error("the -sercfg option can only be used with the "
 			  "serial protocol");
 	/* Value[0] contains one or more , separated values, like 19200,8,n,1,X */
 	nextitem = value;
 	while (nextitem[0] != '\0') {
-            size_t length, skip;
+	    int length, skip;
 	    char *end = strchr(nextitem, ',');
 	    if (!end) {
 		length = strlen(nextitem);
 		skip = 0;
 	    } else {
-                length = (size_t)(end - nextitem);
+		length = end - nextitem;
 		nextitem[length] = '\0';
 		skip = 1;
 	    }
 	    if (length == 1) {
 		switch (*nextitem) {
 		  case '1':
+		    cfg->serstopbits = 2;
+		    break;
 		  case '2':
-		    conf_set_int(conf, CONF_serstopbits, 2 * (*nextitem-'0'));
+		    cfg->serstopbits = 4;
 		    break;
 
 		  case '5':
+		    cfg->serdatabits = 5;
+		    break;
 		  case '6':
+		    cfg->serdatabits = 6;
+		    break;
 		  case '7':
+		    cfg->serdatabits = 7;
+		    break;
 		  case '8':
+		    cfg->serdatabits = 8;
+		    break;
 		  case '9':
-		    conf_set_int(conf, CONF_serdatabits, *nextitem-'0');
+		    cfg->serdatabits = 9;
 		    break;
 
 		  case 'n':
-		    conf_set_int(conf, CONF_serparity, SER_PAR_NONE);
+		    cfg->serparity = SER_PAR_NONE;
 		    break;
 		  case 'o':
-		    conf_set_int(conf, CONF_serparity, SER_PAR_ODD);
+		    cfg->serparity = SER_PAR_ODD;
 		    break;
 		  case 'e':
-		    conf_set_int(conf, CONF_serparity, SER_PAR_EVEN);
+		    cfg->serparity = SER_PAR_EVEN;
 		    break;
 		  case 'm':
-		    conf_set_int(conf, CONF_serparity, SER_PAR_MARK);
+		    cfg->serparity = SER_PAR_MARK;
 		    break;
 		  case 's':
-		    conf_set_int(conf, CONF_serparity, SER_PAR_SPACE);
+		    cfg->serparity = SER_PAR_SPACE;
 		    break;
 
 		  case 'N':
-		    conf_set_int(conf, CONF_serflow, SER_FLOW_NONE);
+		    cfg->serflow = SER_FLOW_NONE;
 		    break;
 		  case 'X':
-		    conf_set_int(conf, CONF_serflow, SER_FLOW_XONXOFF);
+		    cfg->serflow = SER_FLOW_XONXOFF;
 		    break;
 		  case 'R':
-		    conf_set_int(conf, CONF_serflow, SER_FLOW_RTSCTS);
+		    cfg->serflow = SER_FLOW_RTSCTS;
 		    break;
 		  case 'D':
-		    conf_set_int(conf, CONF_serflow, SER_FLOW_DSRDTR);
+		    cfg->serflow = SER_FLOW_DSRDTR;
 		    break;
 
 		  default:
@@ -607,11 +558,11 @@ int cmdline_process_param(const char *p, char *value,
 		}
 	    } else if (length == 3 && !strncmp(nextitem,"1.5",3)) {
 		/* Messy special case */
-		conf_set_int(conf, CONF_serstopbits, 3);
+		cfg->serstopbits = 3;
 	    } else {
 		int serspeed = atoi(nextitem);
 		if (serspeed != 0) {
-		    conf_set_int(conf, CONF_serspeed, serspeed);
+		    cfg->serspeed = serspeed;
 		} else {
 		    cmdline_error("Unrecognised suboption \"-sercfg %s\"",
 				  nextitem);
@@ -620,66 +571,14 @@ int cmdline_process_param(const char *p, char *value,
 	    nextitem += length + skip;
 	}
     }
-
-    if (!strcmp(p, "-sessionlog")) {
-	Filename *fn;
-	RETURN(2);
-	UNAVAILABLE_IN(TOOLTYPE_FILETRANSFER);
-	/* but available even in TOOLTYPE_NONNETWORK, cf pterm "-log" */
-	SAVEABLE(0);
-	fn = filename_from_str(value);
-	conf_set_filename(conf, CONF_logfilename, fn);
-	conf_set_int(conf, CONF_logtype, LGTYP_DEBUG);
-        filename_free(fn);
-    }
-
-    if (!strcmp(p, "-sshlog") ||
-        !strcmp(p, "-sshrawlog")) {
-	Filename *fn;
-	RETURN(2);
-	UNAVAILABLE_IN(TOOLTYPE_NONNETWORK);
-	SAVEABLE(0);
-	fn = filename_from_str(value);
-	conf_set_filename(conf, CONF_logfilename, fn);
-	conf_set_int(conf, CONF_logtype,
-                     !strcmp(p, "-sshlog") ? LGTYP_PACKETS :
-                     /* !strcmp(p, "-sshrawlog") ? */ LGTYP_SSHRAW);
-        filename_free(fn);
-    }
-
-    if (!strcmp(p, "-proxycmd")) {
-	RETURN(2);
-	UNAVAILABLE_IN(TOOLTYPE_NONNETWORK);
-	SAVEABLE(0);
-        conf_set_int(conf, CONF_proxy_type, PROXY_CMD);
-	conf_set_str(conf, CONF_proxy_telnet_command, value);
-    }
-
-#ifdef _WINDOWS
-    /*
-     * Cross-tool options only available on Windows.
-     */
-    if (!strcmp(p, "-restrict-acl") || !strcmp(p, "-restrict_acl") ||
-        !strcmp(p, "-restrictacl")) {
-	RETURN(1);
-        restrict_process_acl();
-        restricted_acl = TRUE;
-    }
-#endif
-
     return ret;			       /* unrecognised */
 }
 
-void cmdline_run_saved(Conf *conf)
+void cmdline_run_saved(Config *cfg)
 {
-    size_t pri, i;
-    for (pri = 0; pri < NPRIORITIES; pri++) {
-	for (i = 0; i < saves[pri].nsaved; i++) {
+    int pri, i;
+    for (pri = 0; pri < NPRIORITIES; pri++)
+	for (i = 0; i < saves[pri].nsaved; i++)
 	    cmdline_process_param(saves[pri].params[i].p,
-				  saves[pri].params[i].value, 0, conf);
-            sfree(saves[pri].params[i].p);
-            sfree(saves[pri].params[i].value);
-        }
-        saves[pri].nsaved = 0;
-    }
+				  saves[pri].params[i].value, 0, cfg);
 }

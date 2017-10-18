@@ -11,7 +11,6 @@
 #include "putty.h"
 #include "storage.h"
 #include "tree234.h"
-#include "winsecur.h"
 
 #define WM_AGENT_CALLBACK (WM_APP + 4)
 
@@ -22,7 +21,7 @@ struct agent_callback {
     int len;
 };
 
-void fatalbox(const char *p, ...)
+void fatalbox(char *p, ...)
 {
     va_list ap;
     fprintf(stderr, "FATAL ERROR: ");
@@ -36,7 +35,7 @@ void fatalbox(const char *p, ...)
     }
     cleanup_exit(1);
 }
-void modalfatalbox(const char *p, ...)
+void modalfatalbox(char *p, ...)
 {
     va_list ap;
     fprintf(stderr, "FATAL ERROR: ");
@@ -50,16 +49,7 @@ void modalfatalbox(const char *p, ...)
     }
     cleanup_exit(1);
 }
-void nonfatal(const char *p, ...)
-{
-    va_list ap;
-    fprintf(stderr, "ERROR: ");
-    va_start(ap, p);
-    vfprintf(stderr, p, ap);
-    va_end(ap);
-    fputc('\n', stderr);
-}
-void connection_fatal(void *frontend, const char *p, ...)
+void connection_fatal(void *frontend, char *p, ...)
 {
     va_list ap;
     fprintf(stderr, "FATAL ERROR: ");
@@ -73,7 +63,7 @@ void connection_fatal(void *frontend, const char *p, ...)
     }
     cleanup_exit(1);
 }
-void cmdline_error(const char *p, ...)
+void cmdline_error(char *p, ...)
 {
     va_list ap;
     fprintf(stderr, "plink: ");
@@ -93,13 +83,13 @@ WSAEVENT netevent;
 
 static Backend *back;
 static void *backhandle;
-static Conf *conf;
+static Config cfg;
 
 int term_ldisc(Terminal *term, int mode)
 {
     return FALSE;
 }
-void frontend_echoedit_update(void *frontend, int echo, int edit)
+void ldisc_update(void *frontend, int echo, int edit)
 {
     /* Update stdin read mode to reflect changes in line discipline. */
     DWORD mode;
@@ -140,13 +130,7 @@ int from_backend_untrusted(void *frontend_handle, const char *data, int len)
     return 0; /* not reached */
 }
 
-int from_backend_eof(void *frontend_handle)
-{
-    handle_write_eof(stdout_handle);
-    return FALSE;   /* do not respond to incoming EOF with outgoing */
-}
-
-int get_userpass_input(prompts_t *p, const unsigned char *in, int inlen)
+int get_userpass_input(prompts_t *p, unsigned char *in, int inlen)
 {
     int ret;
     ret = cmdline_get_passwd_input(p, in, inlen);
@@ -173,7 +157,7 @@ void agent_schedule_callback(void (*callback)(void *, void *, int),
  */
 static void usage(void)
 {
-    printf("Plink: command-line connection utility\n");
+    printf("PuTTY Link: command-line connection utility\n");
     printf("%s\n", ver);
     printf("Usage: plink [options] [user@]host [command]\n");
     printf("       (\"host\" can also be a PuTTY saved session name)\n");
@@ -187,10 +171,6 @@ static void usage(void)
     printf("  -P port   connect to specified port\n");
     printf("  -l user   connect with specified username\n");
     printf("  -batch    disable all interactive prompts\n");
-    printf("  -proxycmd command\n");
-    printf("            use 'command' as local proxy\n");
-    printf("  -sercfg configuration-string (e.g. 19200,8,n,1,X)\n");
-    printf("            Specify the serial configuration (serial only)\n");
     printf("The following options only apply to SSH connections:\n");
     printf("  -pw passw login with specified password\n");
     printf("  -D [listen-IP:]listen-port\n");
@@ -205,30 +185,23 @@ static void usage(void)
     printf("  -1 -2     force use of particular protocol version\n");
     printf("  -4 -6     force use of IPv4 or IPv6\n");
     printf("  -C        enable compression\n");
-    printf("  -i key    private key file for user authentication\n");
+    printf("  -i key    private key file for authentication\n");
     printf("  -noagent  disable use of Pageant\n");
     printf("  -agent    enable use of Pageant\n");
-    printf("  -hostkey aa:bb:cc:...\n");
-    printf("            manually specify a host key (may be repeated)\n");
     printf("  -m file   read remote command(s) from file\n");
     printf("  -s        remote command is an SSH subsystem (SSH-2 only)\n");
     printf("  -N        don't start a shell/command (SSH-2 only)\n");
     printf("  -nc host:port\n");
     printf("            open tunnel in place of session (SSH-2 only)\n");
-    printf("  -sshlog file\n");
-    printf("  -sshrawlog file\n");
-    printf("            log protocol details to a file\n");
-    printf("  -shareexists\n");
-    printf("            test whether a connection-sharing upstream exists\n");
+    printf("  -sercfg configuration-string (e.g. 19200,8,n,1,X)\n");
+    printf("            Specify the serial configuration (serial only)\n");
     exit(1);
 }
 
 static void version(void)
 {
-    char *buildinfo_text = buildinfo("\n");
-    printf("plink: %s\n%s\n", ver, buildinfo_text);
-    sfree(buildinfo_text);
-    exit(0);
+    printf("plink: %s\n", ver);
+    exit(1);
 }
 
 char *do_select(SOCKET skt, int startup)
@@ -300,9 +273,6 @@ void stdouterr_sent(struct handle *h, int new_backlog)
     }
 }
 
-const int share_can_be_downstream = TRUE;
-const int share_can_be_upstream = TRUE;
-
 int main(int argc, char **argv)
 {
     int sending;
@@ -313,10 +283,7 @@ int main(int argc, char **argv)
     int errors;
     int got_host = FALSE;
     int use_subsystem = 0;
-    int just_test_share_exists = FALSE;
-    unsigned long now, next, then;
-
-    dll_hijacking_protection();
+    long now, next;
 
     sklist = NULL;
     skcount = sksize = 0;
@@ -331,11 +298,10 @@ int main(int argc, char **argv)
     /*
      * Process the command line.
      */
-    conf = conf_new();
-    do_defaults(NULL, conf);
+    do_defaults(NULL, &cfg);
     loaded_session = FALSE;
-    default_protocol = conf_get_int(conf, CONF_protocol);
-    default_port = conf_get_int(conf, CONF_port);
+    default_protocol = cfg.protocol;
+    default_port = cfg.port;
     errors = 0;
     {
 	/*
@@ -345,10 +311,8 @@ int main(int argc, char **argv)
 	if (p) {
 	    const Backend *b = backend_from_name(p);
 	    if (b) {
-		default_protocol = b->protocol;
-		default_port = b->default_port;
-		conf_set_int(conf, CONF_protocol, default_protocol);
-		conf_set_int(conf, CONF_port, default_port);
+		default_protocol = cfg.protocol = b->protocol;
+		default_port = cfg.port = b->default_port;
 	    }
 	}
     }
@@ -356,7 +320,7 @@ int main(int argc, char **argv)
 	char *p = *++argv;
 	if (*p == '-') {
 	    int ret = cmdline_process_param(p, (argc > 1 ? argv[1] : NULL),
-					    1, conf);
+					    1, &cfg);
 	    if (ret == -2) {
 		fprintf(stderr,
 			"plink: option \"%s\" requires an argument\n", p);
@@ -368,23 +332,19 @@ int main(int argc, char **argv)
 	    } else if (!strcmp(p, "-batch")) {
 		console_batch_mode = 1;
 	    } else if (!strcmp(p, "-s")) {
-		/* Save status to write to conf later. */
+		/* Save status to write to cfg later. */
 		use_subsystem = 1;
-	    } else if (!strcmp(p, "-V") || !strcmp(p, "--version")) {
+	    } else if (!strcmp(p, "-V")) {
                 version();
-	    } else if (!strcmp(p, "--help")) {
-                usage();
             } else if (!strcmp(p, "-pgpfp")) {
                 pgp_fingerprints();
                 exit(1);
-	    } else if (!strcmp(p, "-shareexists")) {
-                just_test_share_exists = TRUE;
 	    } else {
 		fprintf(stderr, "plink: unknown option \"%s\"\n", p);
 		errors = 1;
 	    }
 	} else if (*p) {
-	    if (!conf_launchable(conf) || !(got_host || loaded_session)) {
+	    if (!cfg_launchable(&cfg) || !(got_host || loaded_session)) {
 		char *q = p;
 		/*
 		 * If the hostname starts with "telnet:", set the
@@ -397,17 +357,19 @@ int main(int argc, char **argv)
 		    q += 7;
 		    if (q[0] == '/' && q[1] == '/')
 			q += 2;
-		    conf_set_int(conf, CONF_protocol, PROT_TELNET);
+		    cfg.protocol = PROT_TELNET;
 		    p = q;
-                    p += host_strcspn(p, ":/");
+		    while (*p && *p != ':' && *p != '/')
+			p++;
 		    c = *p;
 		    if (*p)
 			*p++ = '\0';
 		    if (c == ':')
-			conf_set_int(conf, CONF_port, atoi(p));
+			cfg.port = atoi(p);
 		    else
-			conf_set_int(conf, CONF_port, -1);
-		    conf_set_str(conf, CONF_host, q);
+			cfg.port = -1;
+		    strncpy(cfg.host, q, sizeof(cfg.host) - 1);
+		    cfg.host[sizeof(cfg.host) - 1] = '\0';
 		    got_host = TRUE;
 		} else {
 		    char *r, *user, *host;
@@ -422,9 +384,7 @@ int main(int argc, char **argv)
 			*r = '\0';
 			b = backend_from_name(p);
 			if (b) {
-			    default_protocol = b->protocol;
-			    conf_set_int(conf, CONF_protocol,
-					 default_protocol);
+			    default_protocol = cfg.protocol = b->protocol;
 			    portnumber = b->default_port;
 			}
 			p = r + 1;
@@ -451,24 +411,32 @@ int main(int argc, char **argv)
 		     * same name as the hostname.
 		     */
 		    {
-			Conf *conf2 = conf_new();
-			do_defaults_then_file(host, conf2);
-			if (loaded_session || !conf_launchable(conf2)) {
-			    /* No settings for this host; use defaults */
-			    /* (or session was already loaded with -load) */
-			    conf_set_str(conf, CONF_host, host);
-			    conf_set_int(conf, CONF_port, default_port);
-			    got_host = TRUE;
+			Config cfg2;
+			do_defaults(host, &cfg2);
+			if (loaded_session || !cfg_launchable(&cfg2)) {
+                            do_defaults_file(host, &cfg2);
+                            if (!cfg_launchable(&cfg2)) {
+                                /* No settings for this host; use defaults */
+                                /* (or session was already loaded with -load) */
+                                strncpy(cfg.host, host, sizeof(cfg.host) - 1);
+                                cfg.host[sizeof(cfg.host) - 1] = '\0';
+                                cfg.port = default_port;
+                                got_host = TRUE;
+                            } else {
+                                cfg = cfg2;
+                                loaded_session = TRUE;                                
+                            }
 			} else {
-			    conf_copy_into(conf, conf2);
+			    cfg = cfg2;
 			    loaded_session = TRUE;
 			}
-			conf_free(conf2);
 		    }
 
 		    if (user) {
 			/* Patch in specified username. */
-			conf_set_str(conf, CONF_username, user);
+			strncpy(cfg.username, user,
+				sizeof(cfg.username) - 1);
+			cfg.username[sizeof(cfg.username) - 1] = '\0';
 		    }
 
 		}
@@ -495,9 +463,9 @@ int main(int argc, char **argv)
 		}
 		if (cmdlen) command[--cmdlen]='\0';
 				       /* change trailing blank to NUL */
-		conf_set_str(conf, CONF_remote_cmd, command);
-		conf_set_str(conf, CONF_remote_cmd2, "");
-		conf_set_int(conf, CONF_nopty, TRUE);  /* command => no tty */
+		cfg.remote_cmd_ptr = command;
+		cfg.remote_cmd_ptr2 = NULL;
+		cfg.nopty = TRUE;      /* command => no terminal */
 
 		break;		       /* done with cmdline */
 	    }
@@ -507,89 +475,70 @@ int main(int argc, char **argv)
     if (errors)
 	return 1;
 
-    if (!conf_launchable(conf) || !(got_host || loaded_session)) {
+    if (!cfg_launchable(&cfg) || !(got_host || loaded_session)) {
 	usage();
     }
 
     /*
-     * Muck about with the hostname in various ways.
+     * Trim leading whitespace off the hostname if it's there.
      */
     {
-	char *hostbuf = dupstr(conf_get_str(conf, CONF_host));
-	char *host = hostbuf;
-	char *p, *q;
+	int space = strspn(cfg.host, " \t");
+	memmove(cfg.host, cfg.host+space, 1+strlen(cfg.host)-space);
+    }
 
-	/*
-	 * Trim leading whitespace.
-	 */
-	host += strspn(host, " \t");
-
-	/*
-	 * See if host is of the form user@host, and separate out
-	 * the username if so.
-	 */
-	if (host[0] != '\0') {
-	    char *atsign = strrchr(host, '@');
-	    if (atsign) {
-		*atsign = '\0';
-		conf_set_str(conf, CONF_username, host);
-		host = atsign + 1;
+    /* See if host is of the form user@host */
+    if (cfg_launchable(&cfg)) {
+	char *atsign = strrchr(cfg.host, '@');
+	/* Make sure we're not overflowing the user field */
+	if (atsign) {
+	    if (atsign - cfg.host < sizeof cfg.username) {
+		strncpy(cfg.username, cfg.host, atsign - cfg.host);
+		cfg.username[atsign - cfg.host] = '\0';
 	    }
+	    memmove(cfg.host, atsign + 1, 1 + strlen(atsign + 1));
 	}
-
-        /*
-         * Trim a colon suffix off the hostname if it's there. In
-         * order to protect unbracketed IPv6 address literals
-         * against this treatment, we do not do this if there's
-         * _more_ than one colon.
-         */
-        {
-            char *c = host_strchr(host, ':');
- 
-            if (c) {
-                char *d = host_strchr(c+1, ':');
-                if (!d)
-                    *c = '\0';
-            }
-        }
-
-	/*
-	 * Remove any remaining whitespace.
-	 */
-	p = hostbuf;
-	q = host;
-	while (*q) {
-	    if (*q != ' ' && *q != '\t')
-		*p++ = *q;
-	    q++;
-	}
-	*p = '\0';
-
-	conf_set_str(conf, CONF_host, hostbuf);
-	sfree(hostbuf);
     }
 
     /*
      * Perform command-line overrides on session configuration.
      */
-    cmdline_run_saved(conf);
+    cmdline_run_saved(&cfg);
 
     /*
      * Apply subsystem status.
      */
     if (use_subsystem)
-        conf_set_int(conf, CONF_ssh_subsys, TRUE);
+	cfg.ssh_subsys = TRUE;
 
-    if (!*conf_get_str(conf, CONF_remote_cmd) &&
-	!*conf_get_str(conf, CONF_remote_cmd2) &&
-	!*conf_get_str(conf, CONF_ssh_nc_host))
+    /*
+     * Trim a colon suffix off the hostname if it's there.
+     */
+    cfg.host[strcspn(cfg.host, ":")] = '\0';
+
+    /*
+     * Remove any remaining whitespace from the hostname.
+     */
+    {
+	int p1 = 0, p2 = 0;
+	while (cfg.host[p2] != '\0') {
+	    if (cfg.host[p2] != ' ' && cfg.host[p2] != '\t') {
+		cfg.host[p1] = cfg.host[p2];
+		p1++;
+	    }
+	    p2++;
+	}
+	cfg.host[p1] = '\0';
+    }
+
+    if (!cfg.remote_cmd_ptr && !*cfg.remote_cmd && !*cfg.ssh_nc_host)
 	flags |= FLAG_INTERACTIVE;
 
     /*
      * Select protocol. This is farmed out into a table in a
      * separate file to enable an ssh-free variant.
      */
-    back = backend_from_proto(conf_get_int(conf, CONF_protocol));
+    back = backend_from_proto(cfg.protocol);
     if (back == NULL) {
 	fprintf(stderr,
 		"Internal fault: Unsupported protocol found\n");
@@ -600,7 +549,7 @@ int main(int argc, char **argv)
      * Select port.
      */
     if (portnumber != -1)
-	conf_set_int(conf, CONF_port, portnumber);
+	cfg.port = portnumber;
 
     sk_init();
     if (p_WSAEventSelect == NULL) {
@@ -608,36 +557,8 @@ int main(int argc, char **argv)
 	return 1;
     }
 
-    /*
-     * Plink doesn't provide any way to add forwardings after the
-     * connection is set up, so if there are none now, we can safely set
-     * the "simple" flag.
-     */
-    if (conf_get_int(conf, CONF_protocol) == PROT_SSH &&
-	!conf_get_int(conf, CONF_x11_forward) &&
-	!conf_get_int(conf, CONF_agentfwd) &&
-	!conf_get_str_nthstrkey(conf, CONF_portfwd, 0))
-	conf_set_int(conf, CONF_ssh_simple, TRUE);
-
-    logctx = log_init(NULL, conf);
+    logctx = log_init(NULL, &cfg);
     console_provide_logctx(logctx);
-
-    if (just_test_share_exists) {
-        if (!back->test_for_upstream) {
-            fprintf(stderr, "Connection sharing not supported for connection "
-                    "type '%s'\n", back->name);
-            return 1;
-        }
-        if (back->test_for_upstream(conf_get_str(conf, CONF_host),
-                                    conf_get_int(conf, CONF_port), conf))
-            return 0;
-        else
-            return 1;
-    }
-
-    if (restricted_acl) {
-	logevent(NULL, "Running with restricted process ACL");
-    }
 
     /*
      * Start up the connection.
@@ -647,14 +568,11 @@ int main(int argc, char **argv)
 	const char *error;
 	char *realhost;
 	/* nodelay is only useful if stdin is a character device (console) */
-	int nodelay = conf_get_int(conf, CONF_tcp_nodelay) &&
+	int nodelay = cfg.tcp_nodelay &&
 	    (GetFileType(GetStdHandle(STD_INPUT_HANDLE)) == FILE_TYPE_CHAR);
 
-	error = back->init(NULL, &backhandle, conf,
-			   conf_get_str(conf, CONF_host),
-			   conf_get_int(conf, CONF_port),
-			   &realhost, nodelay,
-			   conf_get_int(conf, CONF_tcp_keepalives));
+	error = back->init(NULL, &backhandle, &cfg, cfg.host, cfg.port,
+			   &realhost, nodelay, cfg.tcp_keepalives);
 	if (error) {
 	    fprintf(stderr, "Unable to open connection:\n%s", error);
 	    return 1;
@@ -702,20 +620,11 @@ int main(int argc, char **argv)
 	    sending = TRUE;
 	}
 
-        if (toplevel_callback_pending()) {
-            ticks = 0;
-            next = now;
-        } else if (run_timers(now, &next)) {
-	    then = now;
-	    now = GETTICKCOUNT();
-	    if (now - then > next - then)
-		ticks = 0;
-	    else
-		ticks = next - now;
+	if (run_timers(now, &next)) {
+	    ticks = next - GETTICKCOUNT();
+	    if (ticks < 0) ticks = 0;  /* just in case */
 	} else {
 	    ticks = INFINITE;
-            /* no need to initialise next here because we can never
-             * get WAIT_TIMEOUT */
 	}
 
 	handles = handle_get_events(&nhandles);
@@ -796,8 +705,6 @@ int main(int argc, char **argv)
 		sfree(c);
 	    }
 	}
-
-        run_toplevel_callbacks();
 
 	if (n == WAIT_TIMEOUT) {
 	    now = next;

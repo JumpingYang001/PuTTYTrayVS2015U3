@@ -9,22 +9,16 @@
 /* ----------------------------------------------------------------------
  * Functions to save and restore PuTTY sessions. Note that this is
  * only the low-level code to do the reading and writing. The
- * higher-level code that translates an internal Conf structure into
- * a set of (key,value) pairs in their external storage format is
- * elsewhere, since it doesn't (mostly) change between platforms.
+ * higher-level code that translates a Config structure into a set
+ * of (key,value) pairs is elsewhere, since it doesn't (mostly)
+ * change between platforms.
  */
 
 /*
  * HACK: PuttyTray / PuTTY File
  * Function to force the storage loader to a certain type
  */
-enum storage_t {
-    STORAGE_REG,
-    STORAGE_FILE
-};
-
-enum storage_t get_storagetype(void);
-void set_storagetype(enum storage_t new_storagetype);
+void set_storagetype(int new_storagetype);
 
 /*
  * Write a saved session. The caller is expected to call
@@ -43,8 +37,8 @@ void set_storagetype(enum storage_t new_storagetype);
 void *open_settings_w(const char *sessionname, char **errmsg);
 void write_setting_s(void *handle, const char *key, const char *value);
 void write_setting_i(void *handle, const char *key, int value);
-void write_setting_filename(void *handle, const char *key, Filename *value);
-void write_setting_fontspec(void *handle, const char *key, FontSpec *font);
+void write_setting_filename(void *handle, const char *key, Filename value);
+void write_setting_fontspec(void *handle, const char *key, FontSpec font);
 void close_settings_w(void *handle);
 
 /*
@@ -53,21 +47,22 @@ void close_settings_w(void *handle);
  * number of calls to read_setting_s() and read_setting_i(), and
  * then close it using close_settings_r().
  * 
- * read_setting_s() returns a dynamically allocated string which the
- * caller must free. read_setting_filename() and
- * read_setting_fontspec() likewise return dynamically allocated
- * structures.
+ * read_setting_s() writes into the provided buffer and returns a
+ * pointer to the same buffer.
  * 
  * If a particular string setting is not present in the session,
  * read_setting_s() can return NULL, in which case the caller
  * should invent a sensible default. If an integer setting is not
  * present, read_setting_i() returns its provided default.
+ * 
+ * read_setting_filename() and read_setting_fontspec() each read into
+ * the provided buffer, and return zero if they failed to.
  */
 void *open_settings_r(const char *sessionname);
-char *read_setting_s(void *handle, const char *key);
+char *read_setting_s(void *handle, const char *key, char *buffer, int buflen);
 int read_setting_i(void *handle, const char *key, int defvalue);
-Filename *read_setting_filename(void *handle, const char *key);
-FontSpec *read_setting_fontspec(void *handle, const char *key);
+int read_setting_filename(void *handle, const char *key, Filename *value);
+int read_setting_fontspec(void *handle, const char *key, FontSpec *font);
 void close_settings_r(void *handle);
 
 /*
@@ -78,7 +73,7 @@ void del_settings(const char *sessionname);
 /*
  * Enumerate all saved sessions.
  */
-void *enum_settings_start(void);
+void *enum_settings_start(int new_storagetype); // HACK: PuttyTray / PuTTY File - enum_settings_start with storagetype
 char *enum_settings_next(void *handle, char *buffer, int buflen);
 void enum_settings_finish(void *handle);
 

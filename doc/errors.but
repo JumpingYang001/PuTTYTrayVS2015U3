@@ -1,3 +1,5 @@
+\define{versioniderrors} \versionid $Id$
+
 \C{errors} Common \i{error messages}
 
 This chapter lists a number of common error messages which PuTTY and
@@ -56,24 +58,19 @@ in the same way as you would if it was new.
 
 See \k{gs-hostkey} for more information on host keys.
 
-\H{errors-ssh-protocol} \q{SSH protocol version 2 required by our
-configuration but server only provides (old, insecure) SSH-1}
+\H{errors-portfwd-space} \q{Out of space for port forwardings}
 
-By default, PuTTY only supports connecting to SSH servers that
-implement \i{SSH protocol version 2}. If you see this message, the
-server you're trying to connect to only supports the older SSH-1
-protocol.
+PuTTY has a fixed-size buffer which it uses to store the details of
+all \i{port forwardings} you have set up in an SSH session. If you
+specify too many port forwardings on the PuTTY or Plink command line
+and this buffer becomes full, you will see this error message.
 
-If the server genuinely only supports SSH-1, then you need to either
-change the \q{SSH protocol version} setting (see \k{config-ssh-prot}),
-or use the \c{-1} command-line option; in any case, you should not
-treat the resulting connection as secure.
+We need to fix this (fixed-size buffers are almost always a mistake)
+but we haven't got round to it. If you actually have trouble with
+this, let us know and we'll move it up our priority list.
 
-You might start seeing this message with new versions of PuTTY (from
-0.68 onwards) where you didn't before, because it used to be possible
-to configure PuTTY to automatically fall back from SSH-2 to SSH-1.
-This is no longer supported, to prevent the possibility of a downgrade
-attack.
+If you're running into this limit, you may want to consider using
+dynamic port forwarding instead; see \k{using-port-forwarding}.
 
 \H{errors-cipher-warning} \q{The first cipher supported by the server is
 ... below the configured warning threshold}
@@ -357,13 +354,3 @@ things into PuTTY while the network is down, but it can also occur
 if PuTTY decides of its own accord to send data: due to a repeat key
 exchange in SSH-2 (see \k{config-ssh-kex-rekey}) or due to
 keepalives (\k{config-keepalive}).
-
-\H{errors-cannotassignaddress} \q{Network error: Cannot assign requested
-address}
-
-This means that the operating system rejected the parameters of the
-network connection PuTTY tried to make, usually without actually
-trying to connect to anything, because they were simply invalid.
-
-A common way to provoke this error is to accidentally try to connect
-to port 0, which is not a valid port number.

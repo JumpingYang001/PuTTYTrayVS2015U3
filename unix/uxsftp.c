@@ -26,15 +26,15 @@
  * In PSFTP our selects are synchronous, so these functions are
  * empty stubs.
  */
-uxsel_id *uxsel_input_add(int fd, int rwx) { return NULL; }
-void uxsel_input_remove(uxsel_id *id) { }
+int uxsel_input_add(int fd, int rwx) { return 0; }
+void uxsel_input_remove(int id) { }
 
 char *x_get_default(const char *key)
 {
     return NULL;		       /* this is a stub */
 }
 
-void platform_get_x11_auth(struct X11Display *display, Conf *conf)
+void platform_get_x11_auth(struct X11Display *display, const Config *cfg)
 {
     /* Do nothing, therefore no auth. */
 }
@@ -53,22 +53,26 @@ int platform_default_i(const char *name, int def)
     return def;
 }
 
-FontSpec *platform_default_fontspec(const char *name)
+FontSpec platform_default_fontspec(const char *name)
 {
-    return fontspec_new("");
+    FontSpec ret;
+    *ret.name = '\0';
+    return ret;
 }
 
-Filename *platform_default_filename(const char *name)
+Filename platform_default_filename(const char *name)
 {
+    Filename ret;
     if (!strcmp(name, "LogFileName"))
-	return filename_from_str("putty.log");
+	strcpy(ret.path, "putty.log");
     else
-	return filename_from_str("");
+	*ret.path = '\0';
+    return ret;
 }
 
 char *get_ttymode(void *frontend, const char *mode) { return NULL; }
 
-int get_userpass_input(prompts_t *p, const unsigned char *in, int inlen)
+int get_userpass_input(prompts_t *p, unsigned char *in, int inlen)
 {
     int ret;
     ret = cmdline_get_passwd_input(p, in, inlen);
@@ -120,9 +124,8 @@ struct RFile {
     int fd;
 };
 
-RFile *open_existing_file(const char *name, uint64 *size,
-			  unsigned long *mtime, unsigned long *atime,
-                          long *perms)
+RFile *open_existing_file(char *name, uint64 *size,
+			  unsigned long *mtime, unsigned long *atime)
 {
     int fd;
     RFile *ret;
@@ -134,7 +137,7 @@ RFile *open_existing_file(const char *name, uint64 *size,
     ret = snew(RFile);
     ret->fd = fd;
 
-    if (size || mtime || atime || perms) {
+    if (size || mtime || atime) {
 	struct stat statbuf;
 	if (fstat(fd, &statbuf) < 0) {
 	    fprintf(stderr, "%s: stat: %s\n", name, strerror(errno));
@@ -150,9 +153,6 @@ RFile *open_existing_file(const char *name, uint64 *size,
 
 	if (atime)
 	    *atime = statbuf.st_atime;
-
-	if (perms)
-	    *perms = statbuf.st_mode;
     }
 
     return ret;
@@ -174,13 +174,12 @@ struct WFile {
     char *name;
 };
 
-WFile *open_new_file(const char *name, long perms)
+WFile *open_new_file(char *name)
 {
     int fd;
     WFile *ret;
 
-    fd = open(name, O_CREAT | O_TRUNC | O_WRONLY,
-              (mode_t)(perms ? perms : 0666));
+    fd = open(name, O_CREAT | O_TRUNC | O_WRONLY, 0666);
     if (fd < 0)
 	return NULL;
 
@@ -192,7 +191,7 @@ WFile *open_new_file(const char *name, long perms)
 }
 
 
-WFile *open_existing_wfile(const char *name, uint64 *size)
+WFile *open_existing_wfile(char *name, uint64 *size)
 {
     int fd;
     WFile *ret;
@@ -298,7 +297,7 @@ uint64 get_file_posn(WFile *f)
     return ret;
 }
 
-int file_type(const char *name)
+int file_type(char *name)
 {
     struct stat statbuf;
 
@@ -321,7 +320,7 @@ struct DirHandle {
     DIR *dir;
 };
 
-DirHandle *open_directory(const char *name)
+DirHandle *open_directory(char *name)
 {
     DIR *dir;
     DirHandle *ret;
@@ -356,7 +355,7 @@ void close_directory(DirHandle *dir)
     sfree(dir);
 }
 
-int test_wildcard(const char *name, int cmdline)
+int test_wildcard(char *name, int cmdline)
 {
     struct stat statbuf;
 
@@ -390,7 +389,7 @@ struct WildcardMatcher {
     glob_t globbed;
     int i;
 };
-WildcardMatcher *begin_wildcard_matching(const char *name) {
+WildcardMatcher *begin_wildcard_matching(char *name) {
     WildcardMatcher *ret = snew(WildcardMatcher);
 
     if (glob(name, 0, NULL, &ret->globbed) < 0) {
@@ -413,21 +412,7 @@ void finish_wildcard_matching(WildcardMatcher *dir) {
     sfree(dir);
 }
 
-char *stripslashes(const char *str, int local)
-{
-    char *p;
-
-    /*
-     * On Unix, we do the same thing regardless of the 'local'
-     * parameter.
-     */
-    p = strrchr(str, '/');
-    if (p) str = p+1;
-
-    return (char *)str;
-}
-
-int vet_filename(const char *name)
+int vet_filename(char *name)
 {
     if (strchr(name, '/'))
 	return FALSE;
@@ -438,12 +423,12 @@ int vet_filename(const char *name)
     return TRUE;
 }
 
-int create_directory(const char *name)
+int create_directory(char *name)
 {
     return mkdir(name, 0777) == 0;
 }
 
-char *dir_file_cat(const char *dir, const char *file)
+char *dir_file_cat(char *dir, char *file)
 {
     return dupcat(dir, "/", file, NULL);
 }
@@ -457,8 +442,7 @@ static int ssh_sftp_do_select(int include_stdin, int no_fds_ok)
     fd_set rset, wset, xset;
     int i, fdcount, fdsize, *fdlist;
     int fd, fdstate, rwx, ret, maxfd;
-    unsigned long now = GETTICKCOUNT();
-    unsigned long next;
+    long now = GETTICKCOUNT();
 
     fdlist = NULL;
     fdcount = fdsize = 0;
@@ -503,38 +487,45 @@ static int ssh_sftp_do_select(int include_stdin, int no_fds_ok)
 	if (include_stdin)
 	    FD_SET_MAX(0, maxfd, rset);
 
-        if (toplevel_callback_pending()) {
-            struct timeval tv;
-            tv.tv_sec = 0;
-            tv.tv_usec = 0;
-            ret = select(maxfd, &rset, &wset, &xset, &tv);
-            if (ret == 0)
-                run_toplevel_callbacks();
-        } else if (run_timers(now, &next)) {
-            do {
-                unsigned long then;
-                long ticks;
-                struct timeval tv;
+	do {
+	    long next, ticks;
+	    struct timeval tv, *ptv;
 
-		then = now;
-		now = GETTICKCOUNT();
-		if (now - then > next - then)
-		    ticks = 0;
-		else
-		    ticks = next - now;
+	    if (run_timers(now, &next)) {
+		ticks = next - GETTICKCOUNT();
+		if (ticks <= 0)
+		    ticks = 1;	       /* just in case */
 		tv.tv_sec = ticks / 1000;
 		tv.tv_usec = ticks % 1000 * 1000;
-                ret = select(maxfd, &rset, &wset, &xset, &tv);
-                if (ret == 0)
-                    now = next;
-                else
-                    now = GETTICKCOUNT();
-            } while (ret < 0 && errno == EINTR);
-        } else {
-            do {
-                ret = select(maxfd, &rset, &wset, &xset, NULL);
-            } while (ret < 0 && errno == EINTR);
-        }
+		ptv = &tv;
+	    } else {
+		ptv = NULL;
+	    }
+	    ret = select(maxfd, &rset, &wset, &xset, ptv);
+	    if (ret == 0)
+		now = next;
+	    else {
+		long newnow = GETTICKCOUNT();
+		/*
+		 * Check to see whether the system clock has
+		 * changed massively during the select.
+		 */
+		if (newnow - now < 0 || newnow - now > next - now) {
+		    /*
+		     * If so, look at the elapsed time in the
+		     * select and use it to compute a new
+		     * tickcount_offset.
+		     */
+		    long othernow = now + tv.tv_sec * 1000 + tv.tv_usec / 1000;
+		    /* So we'd like GETTICKCOUNT to have returned othernow,
+		     * but instead it return newnow. Hence ... */
+		    tickcount_offset += othernow - newnow;
+		    now = othernow;
+		} else {
+		    now = newnow;
+		}
+	    }
+	} while (ret < 0 && errno != EINTR);
     } while (ret == 0);
 
     if (ret < 0) {
@@ -559,8 +550,6 @@ static int ssh_sftp_do_select(int include_stdin, int no_fds_ok)
 
     sfree(fdlist);
 
-    run_toplevel_callbacks();
-
     return FD_ISSET(0, &rset) ? 1 : 0;
 }
 
@@ -575,7 +564,7 @@ int ssh_sftp_loop_iteration(void)
 /*
  * Read a PSFTP command line from stdin.
  */
-char *ssh_sftp_get_cmdline(const char *prompt, int no_fds_ok)
+char *ssh_sftp_get_cmdline(char *prompt, int no_fds_ok)
 {
     char *buf;
     int buflen, bufsize, ret;
@@ -590,7 +579,6 @@ char *ssh_sftp_get_cmdline(const char *prompt, int no_fds_ok)
 	ret = ssh_sftp_do_select(TRUE, no_fds_ok);
 	if (ret < 0) {
 	    printf("connection died\n");
-            sfree(buf);
 	    return NULL;	       /* woop woop */
 	}
 	if (ret > 0) {
@@ -601,12 +589,10 @@ char *ssh_sftp_get_cmdline(const char *prompt, int no_fds_ok)
 	    ret = read(0, buf+buflen, 1);
 	    if (ret < 0) {
 		perror("read");
-                sfree(buf);
 		return NULL;
 	    }
 	    if (ret == 0) {
 		/* eof on stdin; no error, but no answer either */
-                sfree(buf);
 		return NULL;
 	    }
 
@@ -617,10 +603,6 @@ char *ssh_sftp_get_cmdline(const char *prompt, int no_fds_ok)
 	}
     }
 }
-
-void frontend_net_error_pending(void) {}
-
-void platform_psftp_pre_conn_setup(void) {}
 
 /*
  * Main program: do platform-specific initialisation and then call

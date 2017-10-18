@@ -353,12 +353,12 @@ static const PROPERTYKEY PKEY_Title = {
     0x00000002
 };
 
-/* Type-checking macro to provide arguments for CoCreateInstance()
- * etc, ensuring that 'obj' really is a 'type **'. */
-#define typecheck(checkexpr, result) \
-    (sizeof(checkexpr) ? (result) : (result))
+/* Type-checking macro to provide arguments for CoCreateInstance() etc.
+ * The pointer arithmetic is a compile-time pointer type check that 'obj'
+ * really is a 'type **', but is intended to have no effect at runtime. */
 #define COMPTR(type, obj) &IID_##type, \
-    typecheck((obj)-(type **)(obj), (void **)(void *)(obj))
+    (void **)(void *)((obj) + (sizeof((obj)-(type **)(obj))) \
+		            - (sizeof((obj)-(type **)(obj))))
 
 static char putty_path[2048];
 
@@ -410,30 +410,22 @@ static IShellLink *make_shell_link(const char *appname,
     /* Check if this is a valid session, otherwise don't add. */
     if (sessionname) {
         psettings_tmp = open_settings_r(sessionname);
-        if (!psettings_tmp) {
-            sfree(app_path);
+        if (!psettings_tmp)
             return NULL;
-        }
         close_settings_r(psettings_tmp);
     }
 
     /* Create the new item. */
     if (!SUCCEEDED(CoCreateInstance(&CLSID_ShellLink, NULL,
                                     CLSCTX_INPROC_SERVER,
-                                    COMPTR(IShellLink, &ret)))) {
-        sfree(app_path);
+                                    COMPTR(IShellLink, &ret))))
         return NULL;
-    }
 
     /* Set path, parameters, icon and description. */
     ret->lpVtbl->SetPath(ret, app_path);
 
     if (sessionname) {
-        /* The leading space is reported to work around a Windows 10
-         * behaviour change in which an argument string starting with
-         * '@' causes the SetArguments method to silently do the wrong
-         * thing. */
-        param_string = dupcat(" @", sessionname, NULL);
+        param_string = dupcat("@", sessionname, NULL);
     } else {
         param_string = dupstr("");
     }
@@ -445,8 +437,7 @@ static IShellLink *make_shell_link(const char *appname,
                              sessionname, "'", NULL);
     } else {
         assert(appname);
-        desc_string = dupprintf("Run %.*s",
-                                (int)strcspn(appname, "."), appname);
+        desc_string = dupprintf("Run %.*s", strcspn(appname, "."), appname);
     }
     ret->lpVtbl->SetDescription(ret, desc_string);
     sfree(desc_string);
@@ -462,8 +453,7 @@ static IShellLink *make_shell_link(const char *appname,
             pv.pszVal = dupstr(sessionname);
         } else {
             assert(appname);
-            pv.pszVal = dupprintf("Run %.*s",
-                                  (int)strcspn(appname, "."), appname);
+            pv.pszVal = dupprintf("Run %.*s", strcspn(appname, "."), appname);
         }
         pPS->lpVtbl->SetValue(pPS, &PKEY_Title, &pv);
         sfree(pv.pszVal);
@@ -713,34 +703,4 @@ void remove_session_from_jumplist(const char * const sessionname)
         /* Make sure we don't leave the jumplist dangling. */
         clear_jumplist();
     }
-}
-
-/* Set Explicit App User Model Id to fix removable media error with
-   jump lists */
-
-BOOL set_explicit_app_user_model_id()
-{
-  DECL_WINDOWS_FUNCTION(static, HRESULT, SetCurrentProcessExplicitAppUserModelID,
-                        (PCWSTR));
-
-  static HMODULE shell32_module = 0;
-
-    if (!shell32_module)
-    {
-        shell32_module = load_system32_dll("Shell32.dll");
-        GET_WINDOWS_FUNCTION(shell32_module, SetCurrentProcessExplicitAppUserModelID);
-    }
-
-    if (p_SetCurrentProcessExplicitAppUserModelID)
-    {
-        if (p_SetCurrentProcessExplicitAppUserModelID(L"SimonTatham.PuTTY") == S_OK)
-        {
-	  return TRUE;
-        }
-        return FALSE;
-    }
-    /* Function doesn't exist, which is ok for Pre-7 systems */
-
-    return TRUE;
-
 }

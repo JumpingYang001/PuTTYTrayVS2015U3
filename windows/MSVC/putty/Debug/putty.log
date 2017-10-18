@@ -1,0 +1,8 @@
+﻿  windlg.c
+..\..\windlg.c(194): warning C4101: 'str': unreferenced local variable
+..\..\windlg.c(720): warning C4996: 'strcpy': This function or variable may be unsafe. Consider using strcpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+  C:\Program Files (x86)\Windows Kits\10\Include\10.0.10240.0\ucrt\string.h(119): note: see declaration of 'strcpy'
+..\..\windlg.c(721): warning C4996: 'strcat': This function or variable may be unsafe. Consider using strcat_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+  C:\Program Files (x86)\Windows Kits\10\Include\10.0.10240.0\ucrt\string.h(90): note: see declaration of 'strcat'
+  putty.vcxproj -> C:\PuTTYTray\windows\MSVC\putty\.\Debug\putty.exe
+  putty.vcxproj -> .\Debug\putty.pdb (Full PDB)

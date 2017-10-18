@@ -45,28 +45,9 @@ struct RandPool {
     int stir_pending;
 };
 
-int random_active = 0;
-
-#ifdef FUZZING
-/*
- * Special dummy version of the RNG for use when fuzzing.
- */
-void random_add_noise(void *noise, int length) { }
-void random_add_heavynoise(void *noise, int length) { }
-void random_ref(void) { }
-void random_unref(void) { }
-int random_byte(void)
-{
-    return 0x45; /* Chosen by eight fair coin tosses */
-}
-void random_get_savedata(void **data, int *len) { }
-#else /* !FUZZING */
 static struct RandPool pool;
+int random_active = 0;
 long next_noise_collection;
-
-#ifdef RANDOM_DIAGNOSTICS
-int random_diagnostics = 0;
-#endif
 
 static void random_stir(void)
 {
@@ -83,30 +64,6 @@ static void random_stir(void)
     pool.stir_pending = TRUE;
 
     noise_get_light(random_add_noise);
-
-#ifdef RANDOM_DIAGNOSTICS
-    {
-        int p, q;
-        printf("random stir starting\npool:\n");
-        for (p = 0; p < POOLSIZE; p += HASHSIZE) {
-            printf("   ");
-            for (q = 0; q < HASHSIZE; q += 4) {
-                printf(" %08x", *(word32 *)(pool.pool + p + q));            
-            }
-            printf("\n");
-        }
-        printf("incoming:\n   ");
-        for (q = 0; q < HASHSIZE; q += 4) {
-            printf(" %08x", *(word32 *)(pool.incoming + q));
-        }
-        printf("\nincomingb:\n   ");
-        for (q = 0; q < HASHINPUT; q += 4) {
-            printf(" %08x", *(word32 *)(pool.incomingb + q));
-        }
-        printf("\n");
-        random_diagnostics++;
-    }
-#endif
 
     SHATransform((word32 *) pool.incoming, (word32 *) pool.incomingb);
     pool.incomingpos = 0;
@@ -159,29 +116,6 @@ static void random_stir(void)
 	    for (k = 0; k < sizeof(digest) / sizeof(*digest); k++)
 		((word32 *) (pool.pool + j))[k] = digest[k];
 	}
-
-#ifdef RANDOM_DIAGNOSTICS
-        if (i == 0) {
-            int p, q;
-            printf("random stir midpoint\npool:\n");
-            for (p = 0; p < POOLSIZE; p += HASHSIZE) {
-                printf("   ");
-                for (q = 0; q < HASHSIZE; q += 4) {
-                    printf(" %08x", *(word32 *)(pool.pool + p + q));            
-                }
-                printf("\n");
-            }
-            printf("incoming:\n   ");
-            for (q = 0; q < HASHSIZE; q += 4) {
-                printf(" %08x", *(word32 *)(pool.incoming + q));
-            }
-            printf("\nincomingb:\n   ");
-            for (q = 0; q < HASHINPUT; q += 4) {
-                printf(" %08x", *(word32 *)(pool.incomingb + q));
-            }
-            printf("\n");
-        }
-#endif
     }
 
     /*
@@ -194,30 +128,6 @@ static void random_stir(void)
     pool.poolpos = sizeof(pool.incoming);
 
     pool.stir_pending = FALSE;
-
-#ifdef RANDOM_DIAGNOSTICS
-    {
-        int p, q;
-        printf("random stir done\npool:\n");
-        for (p = 0; p < POOLSIZE; p += HASHSIZE) {
-            printf("   ");
-            for (q = 0; q < HASHSIZE; q += 4) {
-                printf(" %08x", *(word32 *)(pool.pool + p + q));            
-            }
-            printf("\n");
-        }
-        printf("incoming:\n   ");
-        for (q = 0; q < HASHSIZE; q += 4) {
-            printf(" %08x", *(word32 *)(pool.incoming + q));
-        }
-        printf("\nincomingb:\n   ");
-        for (q = 0; q < HASHINPUT; q += 4) {
-            printf(" %08x", *(word32 *)(pool.incomingb + q));
-        }
-        printf("\n");
-        random_diagnostics--;
-    }
-#endif
 }
 
 void random_add_noise(void *noise, int length)
@@ -240,7 +150,7 @@ void random_add_noise(void *noise, int length)
 	length -= HASHINPUT - pool.incomingpos;
 	SHATransform((word32 *) pool.incoming, (word32 *) pool.incomingb);
 	for (i = 0; i < HASHSIZE; i++) {
-	    pool.pool[pool.poolpos++] ^= pool.incoming[i];
+	    pool.pool[pool.poolpos++] ^= pool.incomingb[i];
 	    if (pool.poolpos >= POOLSIZE)
 		pool.poolpos = 0;
 	}
@@ -289,9 +199,9 @@ static void random_add_heavynoise_bitbybit(void *noise, int length)
     pool.poolpos = i;
 }
 
-static void random_timer(void *ctx, unsigned long now)
+static void random_timer(void *ctx, long now)
 {
-    if (random_active > 0 && now == next_noise_collection) {
+    if (random_active > 0 && now - next_noise_collection >= 0) {
 	noise_regular();
 	next_noise_collection =
 	    schedule_timer(NOISE_REGULAR_INTERVAL, random_timer, &pool);
@@ -309,23 +219,21 @@ void random_ref(void)
 	next_noise_collection =
 	    schedule_timer(NOISE_REGULAR_INTERVAL, random_timer, &pool);
     }
+
     random_active++;
 }
 
 void random_unref(void)
 {
-    assert(random_active > 0);
-    if (random_active == 1) {
-        random_save_seed();
-        expire_timer_context(&pool);
-    }
     random_active--;
+    assert(random_active >= 0);
+    if (random_active) return;
+
+    expire_timer_context(&pool);
 }
 
 int random_byte(void)
 {
-    assert(random_active);
-
     if (pool.poolpos >= POOLSIZE)
 	random_stir();
 
@@ -341,4 +249,3 @@ void random_get_savedata(void **data, int *len)
     *data = buf;
     random_stir();
 }
-#endif

@@ -11,37 +11,21 @@
 #include <windows.h>
 #include <stdio.h>		       /* for FILENAME_MAX */
 
-/* We use uintptr_t for Win32/Win64 portability, so we should in
- * principle include stdint.h, which defines it according to the C
- * standard. But older versions of Visual Studio - including the one
- * used for official PuTTY builds as of 2015-09-28 - don't provide
- * stdint.h at all, but do (non-standardly) define uintptr_t in
- * stddef.h. So here we try to make sure _some_ standard header is
- * included which defines uintptr_t. */
-#include <stddef.h>
-#if !defined _MSC_VER || _MSC_VER >= 1600
-#include <stdint.h>
-#endif
-
 #include "tree234.h"
 
 #include "winhelp.h"
 
-#define BUILDINFO_PLATFORM "Windows"
-
 struct Filename {
-    char *path;
+    char path[FILENAME_MAX];
 };
-#define f_open(filename, mode, isprivate) ( fopen((filename)->path, (mode)) )
+#define f_open(filename, mode, isprivate) ( fopen((filename).path, (mode)) )
 
 struct FontSpec {
-    char *name;
+    char name[64];
     int isbold;
     int height;
     int charset;
 };
-struct FontSpec *fontspec_new(const char *name,
-                               int bold, int height, int charset);
 
 #ifndef CLEARTYPE_QUALITY
 #define CLEARTYPE_QUALITY 5
@@ -89,28 +73,6 @@ struct FontSpec *fontspec_new(const char *name,
 #define BOXRESULT (DLGWINDOWEXTRA + sizeof(LONG_PTR))
 #define DF_END 0x0001
 
-#ifdef __WINE__
-#define NO_SECUREZEROMEMORY            /* winelib doesn't have this */
-#endif
-
-#ifndef NO_SECUREZEROMEMORY
-#define PLATFORM_HAS_SMEMCLR /* inhibit cross-platform one in misc.c */
-#endif
-
-#ifndef __WINE__
-/* Up-to-date Windows headers warn that the unprefixed versions of
- * these names are deprecated. */
-#define stricmp _stricmp
-#define strnicmp _strnicmp
-#else
-/* Compiling with winegcc, _neither_ version of these functions
- * exists. Use the POSIX names. */
-#define stricmp strcasecmp
-#define strnicmp strncasecmp
-#endif
-
-#define BROKEN_PIPE_ERROR_CODE ERROR_BROKEN_PIPE   /* used in sshshare.c */
-
 /*
  * Dynamically linked functions. These come in two flavours:
  *
@@ -153,7 +115,7 @@ struct FontSpec *fontspec_new(const char *name,
 
 #ifndef DONE_TYPEDEFS
 #define DONE_TYPEDEFS
-typedef struct conf_tag Conf;
+typedef struct config_tag Config;
 typedef struct backend_tag Backend;
 typedef struct terminal_tag Terminal;
 #endif
@@ -181,7 +143,6 @@ typedef struct terminal_tag Terminal;
 #define TICKSPERSEC 1000	       /* GetTickCount returns milliseconds */
 
 #define DEFAULT_CODEPAGE CP_ACP
-#define USES_VTLINE_HACK
 
 typedef HDC Context;
 
@@ -264,13 +225,8 @@ GLOBAL void *logctx;
  * File-selector filter strings used in the config box. On Windows,
  * these strings are of exactly the type needed to go in
  * `lpstrFilter' in an OPENFILENAME structure.
- *
- * "*id_rsa" isn't ideal, but id_rsa* will get id_rsa.pub,
- * which is absolutely not wanted.
  */
-#define FILTER_KEY_FILES ("All Key Types (*.ppk;*id_rsa)\0*.ppk;*id_rsa\0" \
-                              "PuTTY Private Key Files (*.ppk)\0*.ppk\0" \
-                              "OpenSSH RSA private keys (*id_rsa)\0*id_rsa\0" \
+#define FILTER_KEY_FILES ("PuTTY Private Key Files (*.ppk)\0*.ppk\0" \
 			      "All Files (*.*)\0*\0\0\0")
 #define FILTER_WAVE_FILES ("Wave Files (*.wav)\0*.WAV\0" \
 			       "All Files (*.*)\0*\0\0\0")
@@ -278,9 +234,13 @@ GLOBAL void *logctx;
 				 "All Files (*.*)\0*\0\0\0")
 
 /*
- * Exports from winnet.c.
+ * On some versions of Windows, it has been known for WM_TIMER to
+ * occasionally get its callback time simply wrong, and call us
+ * back several minutes early. Defining these symbols enables
+ * compensation code in timing.c.
  */
-extern int select_result(WPARAM, LPARAM);
+#define TIMING_SYNC
+#define TIMING_SYNC_TICKCOUNT
 
 /*
  * winnet.c dynamically loads WinSock 2 or WinSock 1 depending on
@@ -292,21 +252,12 @@ DECL_WINDOWS_FUNCTION(GLOBAL, int, WSAAsyncSelect,
 		      (SOCKET, HWND, u_int, long));
 DECL_WINDOWS_FUNCTION(GLOBAL, int, WSAEventSelect,
 		      (SOCKET, WSAEVENT, long));
-DECL_WINDOWS_FUNCTION(GLOBAL, int, WSAGetLastError, (void));
-DECL_WINDOWS_FUNCTION(GLOBAL, int, WSAEnumNetworkEvents,
-		      (SOCKET, WSAEVENT, LPWSANETWORKEVENTS));
-#ifdef NEED_DECLARATION_OF_SELECT
-/* This declaration is protected by an ifdef for the sake of building
- * against winelib, in which you have to include winsock2.h before
- * stdlib.h so that the right fd_set type gets defined. It would be a
- * pain to do that throughout this codebase, so instead I arrange that
- * only a modules actually needing to use (or define, or initialise)
- * this function pointer will see its declaration, and _those_ modules
- * - which will be Windows-specific anyway - can take more care. */
 DECL_WINDOWS_FUNCTION(GLOBAL, int, select,
 		      (int, fd_set FAR *, fd_set FAR *,
 		       fd_set FAR *, const struct timeval FAR *));
-#endif
+DECL_WINDOWS_FUNCTION(GLOBAL, int, WSAGetLastError, (void));
+DECL_WINDOWS_FUNCTION(GLOBAL, int, WSAEnumNetworkEvents,
+		      (SOCKET, WSAEVENT, LPWSANETWORKEVENTS));
 
 extern int socket_writable(SOCKET skt);
 
@@ -334,7 +285,6 @@ BOOL request_file(filereq *state, OPENFILENAME *of, int preserve, int save);
 filereq *filereq_new(void);
 void filereq_free(filereq *state);
 int message_box(LPCTSTR text, LPCTSTR caption, DWORD style, DWORD helpctxid);
-char *GetDlgItemText_alloc(HWND hwnd, int id);
 void split_into_argv(char *, int *, char ***, char ***);
 
 /*
@@ -510,15 +460,8 @@ void show_help(HWND hwnd);
  * Exports from winmisc.c.
  */
 extern OSVERSIONINFO osVersion;
-void dll_hijacking_protection(void);
 BOOL init_winver(void);
 HMODULE load_system32_dll(const char *libname);
-const char *win_strerror(int error);
-HICON extract_icon(const char *iconpath, int smallicon);
-struct Filename *get_id_rsa_path();
-
-void restrict_process_acl(void);
-GLOBAL int restricted_acl;
 
 /*
  * Exports from sizetip.c.
@@ -530,7 +473,7 @@ void EnableSizeTip(int bEnable);
  * Exports from unicode.c.
  */
 struct unicode_data;
-void init_ucs(Conf *, struct unicode_data *);
+void init_ucs(Config *, struct unicode_data *);
 
 /*
  * Exports from winhandl.c.
@@ -546,15 +489,12 @@ struct handle *handle_input_new(HANDLE handle, handle_inputfn_t gotdata,
 struct handle *handle_output_new(HANDLE handle, handle_outputfn_t sentdata,
 				 void *privdata, int flags);
 int handle_write(struct handle *h, const void *data, int len);
-void handle_write_eof(struct handle *h);
 HANDLE *handle_get_events(int *nevents);
 void handle_free(struct handle *h);
 void handle_got_event(HANDLE event);
 void handle_unthrottle(struct handle *h, int backlog);
 int handle_backlog(struct handle *h);
 void *handle_get_privdata(struct handle *h);
-struct handle *handle_add_foreign_event(HANDLE event,
-                                        void (*callback)(void *), void *ctx);
 
 /*
  * winpgntc.c needs to schedule callbacks for asynchronous agent
@@ -569,6 +509,14 @@ void agent_schedule_callback(void (*callback)(void *, void *, int),
 #define FLAG_SYNCAGENT 0x1000
 
 /*
+ * winpgntc.c also exports these two functions which are used by the
+ * server side of Pageant as well, to get the user SID for comparing
+ * with clients'.
+ */
+int init_advapi(void);  /* initialises everything needed by get_user_sid */
+PSID get_user_sid(void);
+
+/*
  * Exports from winser.c.
  */
 extern Backend serial_backend;
@@ -580,7 +528,6 @@ extern Backend serial_backend;
 void add_session_to_jumplist(const char * const sessionname);
 void remove_session_from_jumplist(const char * const sessionname);
 void clear_jumplist(void);
-BOOL set_explicit_app_user_model_id();
 
 /*
  * Extra functions in winstore.c over and above the interface in
@@ -604,10 +551,5 @@ int remove_from_jumplist_registry(const char *item);
  * sequence of NUL-terminated strings in memory, terminated with an
  * empty one. */
 char *get_jumplist_registry_entries(void);
-
-
-int puttygen_main(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show);
-int putty_main(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show);
-int pageant_main(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show);
 
 #endif

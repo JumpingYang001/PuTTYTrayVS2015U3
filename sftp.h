@@ -63,12 +63,8 @@
  * until len is available, or it returns failure.
  * 
  * Both functions return 1 on success, 0 on failure.
- *
- * sftp_sendbuffer returns the size of the backlog of data in the
- * transmit queue.
  */
 int sftp_senddata(char *data, int len);
-int sftp_sendbuffer(void);
 int sftp_recvdata(char *data, int len);
 
 /*
@@ -85,19 +81,6 @@ struct fxp_attrs {
     unsigned long atime;
     unsigned long mtime;
 };
-
-/*
- * Copy between the possibly-unused permissions field in an fxp_attrs
- * and a possibly-negative integer containing the same permissions.
- */
-#define PUT_PERMISSIONS(attrs, perms)                   \
-    ((perms) >= 0 ?                                     \
-     ((attrs).flags |= SSH_FILEXFER_ATTR_PERMISSIONS,   \
-      (attrs).permissions = (perms)) :                  \
-     ((attrs).flags &= ~SSH_FILEXFER_ATTR_PERMISSIONS))
-#define GET_PERMISSIONS(attrs)                          \
-    ((attrs).flags & SSH_FILEXFER_ATTR_PERMISSIONS ?    \
-     (attrs).permissions : -1)
 
 struct fxp_handle {
     char *hstring;
@@ -129,60 +112,57 @@ int fxp_init(void);
  * Canonify a pathname. Concatenate the two given path elements
  * with a separating slash, unless the second is NULL.
  */
-struct sftp_request *fxp_realpath_send(const char *path);
+struct sftp_request *fxp_realpath_send(char *path);
 char *fxp_realpath_recv(struct sftp_packet *pktin, struct sftp_request *req);
 
 /*
- * Open a file. 'attrs' contains attributes to be applied to the file
- * if it's being created.
+ * Open a file.
  */
-struct sftp_request *fxp_open_send(const char *path, int type,
-                                   struct fxp_attrs *attrs);
+struct sftp_request *fxp_open_send(char *path, int type);
 struct fxp_handle *fxp_open_recv(struct sftp_packet *pktin,
 				 struct sftp_request *req);
 
 /*
  * Open a directory.
  */
-struct sftp_request *fxp_opendir_send(const char *path);
+struct sftp_request *fxp_opendir_send(char *path);
 struct fxp_handle *fxp_opendir_recv(struct sftp_packet *pktin,
 				    struct sftp_request *req);
 
 /*
- * Close a file/dir. Returns 1 on success, 0 on error.
+ * Close a file/dir.
  */
 struct sftp_request *fxp_close_send(struct fxp_handle *handle);
-int fxp_close_recv(struct sftp_packet *pktin, struct sftp_request *req);
+void fxp_close_recv(struct sftp_packet *pktin, struct sftp_request *req);
 
 /*
  * Make a directory.
  */
-struct sftp_request *fxp_mkdir_send(const char *path);
+struct sftp_request *fxp_mkdir_send(char *path);
 int fxp_mkdir_recv(struct sftp_packet *pktin, struct sftp_request *req);
 
 /*
  * Remove a directory.
  */
-struct sftp_request *fxp_rmdir_send(const char *path);
+struct sftp_request *fxp_rmdir_send(char *path);
 int fxp_rmdir_recv(struct sftp_packet *pktin, struct sftp_request *req);
 
 /*
  * Remove a file.
  */
-struct sftp_request *fxp_remove_send(const char *fname);
+struct sftp_request *fxp_remove_send(char *fname);
 int fxp_remove_recv(struct sftp_packet *pktin, struct sftp_request *req);
 
 /*
  * Rename a file.
  */
-struct sftp_request *fxp_rename_send(const char *srcfname,
-                                     const char *dstfname);
+struct sftp_request *fxp_rename_send(char *srcfname, char *dstfname);
 int fxp_rename_recv(struct sftp_packet *pktin, struct sftp_request *req);
 
 /*
  * Return file attributes.
  */
-struct sftp_request *fxp_stat_send(const char *fname);
+struct sftp_request *fxp_stat_send(char *fname);
 int fxp_stat_recv(struct sftp_packet *pktin, struct sftp_request *req,
 		  struct fxp_attrs *attrs);
 struct sftp_request *fxp_fstat_send(struct fxp_handle *handle);
@@ -192,8 +172,7 @@ int fxp_fstat_recv(struct sftp_packet *pktin, struct sftp_request *req,
 /*
  * Set file attributes.
  */
-struct sftp_request *fxp_setstat_send(const char *fname,
-                                      struct fxp_attrs attrs);
+struct sftp_request *fxp_setstat_send(char *fname, struct fxp_attrs attrs);
 int fxp_setstat_recv(struct sftp_packet *pktin, struct sftp_request *req);
 struct sftp_request *fxp_fsetstat_send(struct fxp_handle *handle,
 				       struct fxp_attrs attrs);

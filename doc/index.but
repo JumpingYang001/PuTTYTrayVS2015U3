@@ -1,3 +1,5 @@
+\define{versionidindex} \versionid $Id$
+
 \IM{Unix version} Unix version of PuTTY tools
 \IM{Unix version} Linux version of PuTTY tools
 
@@ -19,10 +21,6 @@
 \IM{host key fingerprint} fingerprint, of SSH host key
 \IM{host key fingerprint} host key fingerprint (SSH)
 \IM{host key fingerprint} SSH host key fingerprint
-
-\IM{manually configuring host keys} manually configuring host keys
-\IM{manually configuring host keys} overriding host keys
-\IM{manually configuring host keys} host keys, manually configuring
 
 \IM{starting a session} starting a session
 \IM{starting a session} session, starting
@@ -59,6 +57,7 @@ from SSH and Telnet
 
 \IM{security hazard}{security risk} security hazard
 
+\IM{SSH-1}{SSH protocol version 1} SSH-1
 \IM{SSH-2}{SSH protocol version 2} SSH-2
 
 \IM{terminal window}{PuTTY window} terminal window
@@ -486,10 +485,6 @@ saved sessions from
 \IM{default foreground} foreground colour, default
 \IM{default foreground} colour, foreground, default
 
-\IM{bold black} bold black
-\IM{bold black} black, bold
-\IM{bold black} bright black
-
 \IM{TERM} \cw{TERM} environment variable
 
 \IM{logical palettes} logical palettes
@@ -765,7 +760,6 @@ saved sessions from
 
 \IM{-batch-plink} \c{-batch} Plink command-line option
 \IM{-s-plink} \c{-s} Plink command-line option
-\IM{-shareexists-plink} \c{-shareexists} Plink command-line option
 
 \IM{subsystem} subsystem, SSH
 \IM{subsystem} SSH subsystem
@@ -843,32 +837,15 @@ saved sessions from
 
 \IM{version of PuTTY} version, of PuTTY
 
-\IM{GPG signatures} PGP signatures, of PuTTY binaries
-\IM{GPG signatures} GPG signatures, of PuTTY binaries
-\IM{GPG signatures} signatures, of PuTTY binaries
+\IM{PGP signatures} PGP signatures, of PuTTY binaries
+\IM{PGP signatures} signatures, of PuTTY binaries
 
 \IM{logical host name} logical host name
 \IM{logical host name} host name, logical
-
-\IM{host key cache}{host key management} host key management
-\IM{host key cache}{host key management} cache, of SSH host keys
+\IM{logical host name} host key, caching policy
 
 \IM{web browsers} web browser
 
 \IM{GSSAPI credential delegation} GSSAPI credential delegation
 \IM{GSSAPI credential delegation} credential delegation, GSSAPI
 \IM{GSSAPI credential delegation} delegation, of GSSAPI credentials
-
-\IM{SYSTEM32} \cw{SYSTEM32} directory, on Windows
-
-\IM{64-bit Windows} 64-bit Windows
-\IM{64-bit Windows} Windows, 64-bit
-
-\IM{Windows process ACL} Windows process ACL
-\IM{Windows process ACL} process ACL (Windows)
-\IM{Windows process ACL} ACL, process (Windows)
-
-\IM{proxy logging} proxy logging
-\IM{proxy logging} logging, proxy
-\IM{proxy logging} diagnostic, proxy
-\IM{proxy logging} standard error, proxy

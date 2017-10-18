@@ -82,7 +82,7 @@ HWND doctl(struct ctlpos *cp, RECT r,
     if (cp->hwnd) {
 	ctl = CreateWindowEx(exstyle, wclass, wtext, wstyle,
 			     r.left, r.top, r.right, r.bottom,
-			     cp->hwnd, (HMENU)(ULONG_PTR)wid, hinst, NULL);
+			     cp->hwnd, (HMENU) wid, hinst, NULL);
 	SendMessage(ctl, WM_SETFONT, cp->font, MAKELPARAM(TRUE, 0));
 
 	if (!strcmp(wclass, "LISTBOX")) {
@@ -273,9 +273,10 @@ void radioline(struct ctlpos *cp, char *text, int id, int nacross, ...)
     nbuttons = 0;
     while (1) {
 	char *btext = va_arg(ap, char *);
+	int bid;
 	if (!btext)
 	    break;
-	(void) va_arg(ap, int); /* id */
+	bid = va_arg(ap, int);
 	nbuttons++;
     }
     va_end(ap);
@@ -304,10 +305,10 @@ void bareradioline(struct ctlpos *cp, int nacross, ...)
     nbuttons = 0;
     while (1) {
 	char *btext = va_arg(ap, char *);
+	int bid;
 	if (!btext)
 	    break;
-	(void) va_arg(ap, int); /* id */
-        nbuttons++;
+	bid = va_arg(ap, int);
     }
     va_end(ap);
     buttons = snewn(nbuttons, struct radio);
@@ -335,10 +336,10 @@ void radiobig(struct ctlpos *cp, char *text, int id, ...)
     nbuttons = 0;
     while (1) {
 	char *btext = va_arg(ap, char *);
+	int bid;
 	if (!btext)
 	    break;
-	(void) va_arg(ap, int); /* id */
-        nbuttons++;
+	bid = va_arg(ap, int);
     }
     va_end(ap);
     buttons = snewn(nbuttons, struct radio);
@@ -377,6 +378,7 @@ void checkbox(struct ctlpos *cp, char *text, int id)
 char *staticwrap(struct ctlpos *cp, HWND hwnd, char *text, int *lines)
 {
     HDC hdc = GetDC(hwnd);
+    int lpx = GetDeviceCaps(hdc, LOGPIXELSX);
     int width, nlines, j;
     INT *pwidths, nfit;
     SIZE size;
@@ -451,8 +453,6 @@ char *staticwrap(struct ctlpos *cp, HWND hwnd, char *text, int *lines)
     ReleaseDC(cp->hwnd, hdc);
 
     if (lines) *lines = nlines;
-
-    sfree(pwidths);
 
     return ret;
 }
@@ -959,21 +959,24 @@ void prefslist(struct prefslist *hdl, struct ctlpos *cp, int lines,
 
 }
 
+/*
+ * HACK: PuttyTray / Session Icon
+ */ 
 void staticicon(struct ctlpos *cp, char *stext, char *iname, int id)
 {
-    RECT r;
-    HWND hcontrol;
-    HICON hicon;
+	RECT r;
+	HWND hcontrol;
+	HICON hicon;
 
-    r.left = GAPBETWEEN;
-    r.top = cp->ypos;
-    r.right = cp->width;
-    r.bottom = ICONHEIGHT;
-    cp->ypos += r.bottom + GAPBETWEEN;
-    hcontrol = doctl(cp, r, "STATIC",
-	        WS_CHILD | WS_VISIBLE | SS_ICON, 0, NULL, id);
-    hicon = extract_icon(iname, FALSE);
-    SendMessage(hcontrol, STM_SETICON, (WPARAM) hicon, 0);
+	r.left = GAPBETWEEN;
+	r.top = cp->ypos;
+	r.right = cp->width;
+	r.bottom = ICONHEIGHT;
+	cp->ypos += r.bottom + GAPBETWEEN;
+	hcontrol = doctl(cp, r, "STATIC",
+		WS_CHILD | WS_VISIBLE | SS_ICON, 0, NULL, id);
+	hicon = extract_icon(iname, FALSE);
+	SendMessage(hcontrol, STM_SETICON, (WPARAM) hicon, 0);
 }
 
 /*
@@ -1541,13 +1544,18 @@ void winctrl_layout(struct dlgparam *dp, struct winctrls *wc,
 	    }
 	    sfree(escaped);
 	    break;
-	  case CTRL_ICON:
-            {
-		Conf *conf = (Conf *)dp->data;
-		num_ids = 1;
-		staticicon(&pos, ctrl->icon.label, conf_get_filename(conf, ctrl->icon.context.i)->path, base_id);
-	    }
-            break;
+
+		/*
+		 * HACK: PuttyTray / Session Icon
+		 */ 
+		case CTRL_ICON: {
+			Config *cfg = (Config *)dp->data;
+			num_ids = 1;
+			staticicon(&pos, ctrl->icon.label, (char *) ATOFFSET(cfg, ctrl->icon.context.i), base_id);
+			break;
+		}
+		//-----------------------------------------------------
+
 	  case CTRL_RADIO:
 	    num_ids = ctrl->radio.nbuttons + 1;   /* label as well */
 	    {
@@ -1669,8 +1677,8 @@ void winctrl_layout(struct dlgparam *dp, struct winctrls *wc,
 	    shortcuts[nshortcuts++] = ctrl->fontselect.shortcut;
 	    statictext(&pos, escaped, 1, base_id);
 	    staticbtn(&pos, "", base_id+1, "Change...", base_id+2);
-            data = fontspec_new("", 0, 0, 0);
 	    sfree(escaped);
+	    data = snew(FontSpec);
 	    break;
 	  default:
 	    assert(!"Can't happen");
@@ -1695,9 +1703,7 @@ void winctrl_layout(struct dlgparam *dp, struct winctrls *wc,
 	    winctrl_add_shortcuts(dp, c);
 	    if (actual_base_id == base_id)
 		base_id += num_ids;
-	} else {
-            sfree(data);
-        }
+	}
 
 	if (colstart >= 0) {
 	    /*
@@ -1966,21 +1972,21 @@ int winctrl_handle_command(struct dlgparam *dp, UINT msg,
 	    CHOOSEFONT cf;
 	    LOGFONT lf;
 	    HDC hdc;
-	    FontSpec *fs = (FontSpec *)c->data;
-
+	    FontSpec fs = *(FontSpec *)c->data;
+	    
 	    hdc = GetDC(0);
-	    lf.lfHeight = -MulDiv(fs->height,
+	    lf.lfHeight = -MulDiv(fs.height,
 				  GetDeviceCaps(hdc, LOGPIXELSY), 72);
 	    ReleaseDC(0, hdc);
 	    lf.lfWidth = lf.lfEscapement = lf.lfOrientation = 0;
 	    lf.lfItalic = lf.lfUnderline = lf.lfStrikeOut = 0;
-	    lf.lfWeight = (fs->isbold ? FW_BOLD : 0);
-	    lf.lfCharSet = fs->charset;
+	    lf.lfWeight = (fs.isbold ? FW_BOLD : 0);
+	    lf.lfCharSet = fs.charset;
 	    lf.lfOutPrecision = OUT_DEFAULT_PRECIS;
 	    lf.lfClipPrecision = CLIP_DEFAULT_PRECIS;
 	    lf.lfQuality = DEFAULT_QUALITY;
 	    lf.lfPitchAndFamily = FIXED_PITCH | FF_DONTCARE;
-	    strncpy(lf.lfFaceName, fs->name,
+	    strncpy(lf.lfFaceName, fs.name,
 		    sizeof(lf.lfFaceName) - 1);
 	    lf.lfFaceName[sizeof(lf.lfFaceName) - 1] = '\0';
 
@@ -1991,11 +1997,13 @@ int winctrl_handle_command(struct dlgparam *dp, UINT msg,
                 CF_FORCEFONTEXIST | CF_INITTOLOGFONTSTRUCT | CF_SCREENFONTS;
 
 	    if (ChooseFont(&cf)) {
-                fs = fontspec_new(lf.lfFaceName, (lf.lfWeight == FW_BOLD),
-                                  cf.iPointSize / 10, lf.lfCharSet);
+		strncpy(fs.name, lf.lfFaceName,
+			sizeof(fs.name) - 1);
+		fs.name[sizeof(fs.name) - 1] = '\0';
+		fs.isbold = (lf.lfWeight == FW_BOLD);
+		fs.charset = lf.lfCharSet;
+		fs.height = cf.iPointSize / 10;
 		dlg_fontsel_set(ctrl, dp, fs);
-                fontspec_free(fs);
-
 		ctrl->generic.handler(ctrl, dp, dp->data, EVENT_VALCHANGE);
 	    }
 	}
@@ -2130,12 +2138,13 @@ void dlg_editbox_set(union control *ctrl, void *dlg, char const *text)
     SetDlgItemText(dp->hwnd, c->base_id+1, text);
 }
 
-char *dlg_editbox_get(union control *ctrl, void *dlg)
+void dlg_editbox_get(union control *ctrl, void *dlg, char *buffer, int length)
 {
     struct dlgparam *dp = (struct dlgparam *)dlg;
     struct winctrl *c = dlg_findbyctrl(dp, ctrl);
     assert(c && c->ctrl->generic.type == CTRL_EDITBOX);
-    return GetDlgItemText_alloc(dp->hwnd, c->base_id+1);
+    GetDlgItemText(dp->hwnd, c->base_id+1, buffer, length);
+    buffer[length-1] = '\0';
 }
 
 /* The `listbox' functions can also apply to combo boxes. */
@@ -2268,15 +2277,20 @@ void dlg_text_set(union control *ctrl, void *dlg, char const *text)
     SetDlgItemText(dp->hwnd, c->base_id, text);
 }
 
+/*
+ * HACK: PuttyTray / Session Icon
+ */ 
 void dlg_icon_set(union control *ctrl, void *dlg, char const *icon)
 {
-    HICON hicon;
-    struct dlgparam *dp = (struct dlgparam *) dlg;
-    struct winctrl *c = dlg_findbyctrl(dp, ctrl);
-    assert(c && c->ctrl->generic.type == CTRL_ICON);
-    hicon = extract_icon((char *) icon, FALSE);
-    SendDlgItemMessage(dp->hwnd, c->base_id, STM_SETICON, (WPARAM) hicon, 0);
-}
+	HICON hicon;
+
+	struct dlgparam *dp = (struct dlgparam *) dlg;
+	struct winctrl *c = dlg_findbyctrl(dp, ctrl);
+	assert(c && c->ctrl->generic.type == CTRL_ICON);
+	hicon = extract_icon((char *) icon, FALSE);
+	SendDlgItemMessage(dp->hwnd, c->base_id, STM_SETICON, (WPARAM) hicon, 0);
+};
+//--------------------------------
 
 void dlg_label_change(union control *ctrl, void *dlg, char const *text)
 {
@@ -2325,56 +2339,51 @@ void dlg_label_change(union control *ctrl, void *dlg, char const *text)
     }
 }
 
-void dlg_filesel_set(union control *ctrl, void *dlg, Filename *fn)
+void dlg_filesel_set(union control *ctrl, void *dlg, Filename fn)
 {
     struct dlgparam *dp = (struct dlgparam *)dlg;
     struct winctrl *c = dlg_findbyctrl(dp, ctrl);
     assert(c && c->ctrl->generic.type == CTRL_FILESELECT);
-    SetDlgItemText(dp->hwnd, c->base_id+1, fn->path);
+    SetDlgItemText(dp->hwnd, c->base_id+1, fn.path);
 }
 
-Filename *dlg_filesel_get(union control *ctrl, void *dlg)
+void dlg_filesel_get(union control *ctrl, void *dlg, Filename *fn)
 {
     struct dlgparam *dp = (struct dlgparam *)dlg;
     struct winctrl *c = dlg_findbyctrl(dp, ctrl);
-    char *tmp;
-    Filename *ret;
     assert(c && c->ctrl->generic.type == CTRL_FILESELECT);
-    tmp = GetDlgItemText_alloc(dp->hwnd, c->base_id+1);
-    ret = filename_from_str(tmp);
-    sfree(tmp);
-    return ret;
+    GetDlgItemText(dp->hwnd, c->base_id+1, fn->path, lenof(fn->path));
+    fn->path[lenof(fn->path)-1] = '\0';
 }
 
-void dlg_fontsel_set(union control *ctrl, void *dlg, FontSpec *fs)
+void dlg_fontsel_set(union control *ctrl, void *dlg, FontSpec fs)
 {
     char *buf, *boldstr;
     struct dlgparam *dp = (struct dlgparam *)dlg;
     struct winctrl *c = dlg_findbyctrl(dp, ctrl);
     assert(c && c->ctrl->generic.type == CTRL_FONTSELECT);
 
-    fontspec_free((FontSpec *)c->data);
-    c->data = fontspec_copy(fs);
+    *(FontSpec *)c->data = fs;	       /* structure copy */
 
-    boldstr = (fs->isbold ? "bold, " : "");
-    if (fs->height == 0)
-	buf = dupprintf("Font: %s, %sdefault height", fs->name, boldstr);
+    boldstr = (fs.isbold ? "bold, " : "");
+    if (fs.height == 0)
+	buf = dupprintf("Font: %s, %sdefault height", fs.name, boldstr);
     else
-	buf = dupprintf("Font: %s, %s%d-%s", fs->name, boldstr,
-			(fs->height < 0 ? -fs->height : fs->height),
-			(fs->height < 0 ? "pixel" : "point"));
+	buf = dupprintf("Font: %s, %s%d-%s", fs.name, boldstr,
+			(fs.height < 0 ? -fs.height : fs.height),
+			(fs.height < 0 ? "pixel" : "point"));
     SetDlgItemText(dp->hwnd, c->base_id+1, buf);
     sfree(buf);
 
     dlg_auto_set_fixed_pitch_flag(dp);
 }
 
-FontSpec *dlg_fontsel_get(union control *ctrl, void *dlg)
+void dlg_fontsel_get(union control *ctrl, void *dlg, FontSpec *fs)
 {
     struct dlgparam *dp = (struct dlgparam *)dlg;
     struct winctrl *c = dlg_findbyctrl(dp, ctrl);
     assert(c && c->ctrl->generic.type == CTRL_FONTSELECT);
-    return fontspec_copy((FontSpec *)c->data);
+    *fs = *(FontSpec *)c->data;	       /* structure copy */
 }
 
 /*
@@ -2408,8 +2417,6 @@ void dlg_set_focus(union control *ctrl, void *dlg)
     struct winctrl *c = dlg_findbyctrl(dp, ctrl);
     int id;
     HWND ctl;
-    if (!c)
-        return;
     switch (ctrl->generic.type) {
       case CTRL_EDITBOX: id = c->base_id + 1; break;
       case CTRL_RADIO:
@@ -2444,7 +2451,7 @@ void dlg_beep(void *dlg)
     MessageBeep(0);
 }
 
-void dlg_error_msg(void *dlg, const char *msg)
+void dlg_error_msg(void *dlg, char *msg)
 {
     struct dlgparam *dp = (struct dlgparam *)dlg;
     MessageBox(dp->hwnd, msg,
@@ -2517,10 +2524,8 @@ int dlg_coloursel_results(union control *ctrl, void *dlg,
 void dlg_auto_set_fixed_pitch_flag(void *dlg)
 {
     struct dlgparam *dp = (struct dlgparam *)dlg;
-    Conf *conf = (Conf *)dp->data;
-    FontSpec *fs;
-    int quality;
-    HFONT hfont;
+    Config *cfg = (Config *)dp->data;
+    HFONT font;
     HDC hdc;
     TEXTMETRIC tm;
     int is_var;
@@ -2531,19 +2536,16 @@ void dlg_auto_set_fixed_pitch_flag(void *dlg)
      * dialog box as false.
      *
      * We assume here that any client of the dlg_* mechanism which is
-     * using font selectors at all is also using a normal 'Conf *'
+     * using font selectors at all is also using a normal 'Config *'
      * as dp->data.
      */
 
-    quality = conf_get_int(conf, CONF_font_quality);
-    fs = conf_get_fontspec(conf, CONF_font);
-
-    hfont = CreateFont(0, 0, 0, 0, FW_DONTCARE, FALSE, FALSE, FALSE,
-                       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                       CLIP_DEFAULT_PRECIS, FONT_QUALITY(quality),
-                       FIXED_PITCH | FF_DONTCARE, fs->name);
+    font = CreateFont(0, 0, 0, 0, FW_DONTCARE, FALSE, FALSE, FALSE,
+                      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                      CLIP_DEFAULT_PRECIS, FONT_QUALITY(cfg->font_quality),
+                      FIXED_PITCH | FF_DONTCARE, cfg->font.name);
     hdc = GetDC(NULL);
-    if (hdc && SelectObject(hdc, hfont) && GetTextMetrics(hdc, &tm)) {
+    if (font && hdc && SelectObject(hdc, font) && GetTextMetrics(hdc, &tm)) {
         /* Note that the TMPF_FIXED_PITCH bit is defined upside down :-( */
         is_var = (tm.tmPitchAndFamily & TMPF_FIXED_PITCH);
     } else {
@@ -2551,8 +2553,8 @@ void dlg_auto_set_fixed_pitch_flag(void *dlg)
     }
     if (hdc)
         ReleaseDC(NULL, hdc);
-    if (hfont)
-        DeleteObject(hfont);
+    if (font)
+        DeleteObject(font);
 
     if (is_var)
         dp->fixed_pitch_fonts = FALSE;
@@ -2570,6 +2572,23 @@ void dlg_set_fixed_pitch_flag(void *dlg, int flag)
     dp->fixed_pitch_fonts = flag;
 }
 
+struct perctrl_privdata {
+    union control *ctrl;
+    void *data;
+    int needs_free;
+};
+
+static int perctrl_privdata_cmp(void *av, void *bv)
+{
+    struct perctrl_privdata *a = (struct perctrl_privdata *)av;
+    struct perctrl_privdata *b = (struct perctrl_privdata *)bv;
+    if (a->ctrl < b->ctrl)
+	return -1;
+    else if (a->ctrl > b->ctrl)
+	return +1;
+    return 0;
+}
+
 void dp_init(struct dlgparam *dp)
 {
     dp->nctrltrees = 0;
@@ -2579,6 +2598,7 @@ void dp_init(struct dlgparam *dp)
     memset(dp->shortcuts, 0, sizeof(dp->shortcuts));
     dp->hwnd = NULL;
     dp->wintitle = dp->errtitle = NULL;
+    dp->privdata = newtree234(perctrl_privdata_cmp);
     dp->fixed_pitch_fonts = TRUE;
 }
 
@@ -2590,13 +2610,77 @@ void dp_add_tree(struct dlgparam *dp, struct winctrls *wc)
 
 void dp_cleanup(struct dlgparam *dp)
 {
+    struct perctrl_privdata *p;
+
+    if (dp->privdata) {
+	while ( (p = index234(dp->privdata, 0)) != NULL ) {
+	    del234(dp->privdata, p);
+	    if (p->needs_free)
+		sfree(p->data);
+	    sfree(p);
+	}
+	freetree234(dp->privdata);
+	dp->privdata = NULL;
+    }
     sfree(dp->wintitle);
     sfree(dp->errtitle);
 }
 
-int dlg_pick_icon(void *dlg, char **iname, int inamesize, DWORD *iindex)
+void *dlg_get_privdata(union control *ctrl, void *dlg)
 {
-    struct dlgparam *dp = (struct dlgparam *) dlg;
-    int ret = SelectIcon(dp->hwnd, *iname, inamesize, iindex);
-    return ret == IDOK ? TRUE : FALSE;
+    struct dlgparam *dp = (struct dlgparam *)dlg;
+    struct perctrl_privdata tmp, *p;
+    tmp.ctrl = ctrl;
+    p = find234(dp->privdata, &tmp, NULL);
+    if (p)
+	return p->data;
+    else
+	return NULL;
 }
+
+void dlg_set_privdata(union control *ctrl, void *dlg, void *ptr)
+{
+    struct dlgparam *dp = (struct dlgparam *)dlg;
+    struct perctrl_privdata tmp, *p;
+    tmp.ctrl = ctrl;
+    p = find234(dp->privdata, &tmp, NULL);
+    if (!p) {
+	p = snew(struct perctrl_privdata);
+	p->ctrl = ctrl;
+	p->needs_free = FALSE;
+	add234(dp->privdata, p);
+    }
+    p->data = ptr;
+}
+
+void *dlg_alloc_privdata(union control *ctrl, void *dlg, size_t size)
+{
+    struct dlgparam *dp = (struct dlgparam *)dlg;
+    struct perctrl_privdata tmp, *p;
+    tmp.ctrl = ctrl;
+    p = find234(dp->privdata, &tmp, NULL);
+    if (!p) {
+	p = snew(struct perctrl_privdata);
+	p->ctrl = ctrl;
+	p->needs_free = FALSE;
+	add234(dp->privdata, p);
+    }
+    assert(!p->needs_free);
+    p->needs_free = TRUE;
+    /*
+     * This is an internal allocation routine, so it's allowed to
+     * use smalloc directly.
+     */
+    p->data = smalloc(size);
+    return p->data;
+}
+
+/*
+ * HACK: PuttyTray / Session Icon
+ */ 
+int dlg_pick_icon(void *dlg, char **iname, int inamesize, int *iindex)
+{
+	struct dlgparam *dp = (struct dlgparam *) dlg;
+	int ret = SelectIcon(dp->hwnd, *iname, inamesize, iindex);
+	return ret == IDOK ? TRUE : FALSE;
+};

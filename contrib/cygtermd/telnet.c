@@ -325,7 +325,9 @@ static void proc_rec_opt(Telnet telnet, int cmd, int option)
 
 static void process_subneg(Telnet telnet)
 {
+    unsigned char b[2048], *p, *q;
     int var, value, n;
+    char *e;
 
     switch (telnet->sb_opt) {
       case TELOPT_OLD_ENVIRON:
@@ -422,10 +424,7 @@ void telnet_from_net(Telnet telnet, char *buf, int len)
 		char cc = c;
 		sel_write(telnet->pty, &cc, 1);
 
-		if (c == CR)
-		    telnet->state = SEENCR;
-		else
-		    telnet->state = TOP_LEVEL;
+		telnet->state = SEENCR;
 	    }
 	    break;
 	  case SEENIAC:

@@ -14,7 +14,6 @@
 #include "win_res.h"
 #include "storage.h"
 #include "dialog.h"
-#include "licence.h"
 
 #include <commctrl.h>
 #include <commdlg.h>
@@ -45,9 +44,10 @@ static struct dlgparam dp;
 static char **events = NULL;
 static int nevents = 0, negsize = 0;
 
-extern Conf *conf;		       /* defined in window.c */
+extern Config cfg;		       /* defined in window.c */
 
 #define PRINTER_DISABLED_STRING "None (printing disabled)"
+#define PRINT_TO_CLIPBOARD_STRING "Windows clipboard"
 
 void force_normal(HWND hwnd)
 {
@@ -67,8 +67,8 @@ void force_normal(HWND hwnd)
     recurse = 0;
 }
 
-static INT_PTR CALLBACK LogProc(HWND hwnd, UINT msg,
-                                WPARAM wParam, LPARAM lParam)
+static int CALLBACK LogProc(HWND hwnd, UINT msg,
+			    WPARAM wParam, LPARAM lParam)
 {
     int i;
 
@@ -162,8 +162,8 @@ static INT_PTR CALLBACK LogProc(HWND hwnd, UINT msg,
     return 0;
 }
 
-static INT_PTR CALLBACK LicenceProc(HWND hwnd, UINT msg,
-                                    WPARAM wParam, LPARAM lParam)
+static int CALLBACK LicenceProc(HWND hwnd, UINT msg,
+				WPARAM wParam, LPARAM lParam)
 {
     switch (msg) {
       case WM_INITDIALOG:
@@ -171,7 +171,6 @@ static INT_PTR CALLBACK LicenceProc(HWND hwnd, UINT msg,
 	    char *str = dupprintf("%s Licence", appname);
 	    SetWindowText(hwnd, str);
 	    sfree(str);
-            SetDlgItemText(hwnd, IDA_TEXT, LICENCE_TEXT("\r\n\r\n"));
 	}
 	return 1;
       case WM_COMMAND:
@@ -189,26 +188,14 @@ static INT_PTR CALLBACK LicenceProc(HWND hwnd, UINT msg,
     return 0;
 }
 
-static INT_PTR CALLBACK AboutProc(HWND hwnd, UINT msg,
-                                  WPARAM wParam, LPARAM lParam)
+static int CALLBACK AboutProc(HWND hwnd, UINT msg,
+			      WPARAM wParam, LPARAM lParam)
 {
     char *str;
 
     switch (msg) {
       case WM_INITDIALOG:
-	str = dupprintf("About %s", appname);
-	SetWindowText(hwnd, str);
-	sfree(str);
-        {
-            char *buildinfo_text = buildinfo("\r\n");
-            char *text = dupprintf
-                ("%s\r\n\r\n%s\r\n\r\n%s\r\n\r\n%s",
-                 appname, ver, buildinfo_text,
-                 "\251 " SHORT_COPYRIGHT_DETAILS ". All rights reserved.");
-            sfree(buildinfo_text);
-            SetDlgItemText(hwnd, IDA_TEXT, text);
-            sfree(text);
-        }
+	SetDlgItemText(hwnd, IDA_VERSION, ver);
 	return 1;
       case WM_COMMAND:
 	switch (LOWORD(wParam)) {
@@ -244,28 +231,26 @@ static int SaneDialogBox(HINSTANCE hinst,
 			 HWND hwndparent,
 			 DLGPROC lpDialogFunc)
 {
-    WNDCLASSEX wc;
+    WNDCLASSEX wc; //HACK: PuTTYTray / Icon Fix
     HWND hwnd;
     MSG msg;
     int flags;
     int ret;
     int gm;
 
-    wc.cbSize = sizeof(WNDCLASSEX);
-    wc.style = CS_DBLCLKS | CS_SAVEBITS | CS_BYTEALIGNWINDOW;
+    wc.cbSize = sizeof(WNDCLASSEX); //HACK: PuTTYTray / Icon Fix
+	wc.style = CS_DBLCLKS | CS_SAVEBITS | CS_BYTEALIGNWINDOW;
     wc.lpfnWndProc = DefDlgProc;
     wc.cbClsExtra = 0;
     wc.cbWndExtra = DLGWINDOWEXTRA + 2*sizeof(LONG_PTR);
     wc.hInstance = hinst;
-    wc.hIcon = LoadImage(hinst, MAKEINTRESOURCE(IDI_CFGICON), IMAGE_ICON,
-        GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_DEFAULTCOLOR|LR_SHARED);
-    wc.hIconSm = LoadImage(hinst, MAKEINTRESOURCE(IDI_CFGICON), IMAGE_ICON,
-        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR|LR_SHARED);
+	wc.hIcon = LoadImage(hinst, MAKEINTRESOURCE(IDI_CFGICON), IMAGE_ICON, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_DEFAULTCOLOR|LR_SHARED); //HACK: PuTTYTray / Icon Fix
+	wc.hIconSm = LoadImage(hinst, MAKEINTRESOURCE(IDI_CFGICON), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR|LR_SHARED); //HACK: PuTTYTray / Icon Fix
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.hbrBackground = (HBRUSH) (COLOR_BACKGROUND +1);
     wc.lpszMenuName = NULL;
     wc.lpszClassName = "PuTTYConfigBox";
-    RegisterClassEx(&wc);
+    RegisterClassEx(&wc); //HACK: PuTTYTray / Icon Fix
 
     hwnd = CreateDialog(hinst, tmpl, hwndparent, lpDialogFunc);
 
@@ -297,8 +282,8 @@ static void SaneEndDialog(HWND hwnd, int ret)
 /*
  * Null dialog procedure.
  */
-static INT_PTR CALLBACK NullDlgProc(HWND hwnd, UINT msg,
-                                    WPARAM wParam, LPARAM lParam)
+static int CALLBACK NullDlgProc(HWND hwnd, UINT msg,
+				WPARAM wParam, LPARAM lParam)
 {
     return 0;
 }
@@ -381,8 +366,8 @@ static void create_controls(HWND hwnd, char *path)
  * (Being a dialog procedure, in general it returns 0 if the default
  * dialog processing should be performed, and 1 if it should not.)
  */
-static INT_PTR CALLBACK GenericMainDlgProc(HWND hwnd, UINT msg,
-                                           WPARAM wParam, LPARAM lParam)
+static int CALLBACK GenericMainDlgProc(HWND hwnd, UINT msg,
+				       WPARAM wParam, LPARAM lParam)
 {
     HWND hw, treeview;
     struct treeview_faff tvfaff;
@@ -404,11 +389,9 @@ static INT_PTR CALLBACK GenericMainDlgProc(HWND hwnd, UINT msg,
                 DestroyWindow(item);
         }
 
-#if 0 // PuTTYTray sets the icon elsewhere
-	SendMessage(hwnd, WM_SETICON, (WPARAM) ICON_BIG,
-		    (LPARAM) LoadIcon(hinst, MAKEINTRESOURCE(IDI_CFGICON)));
-#endif
-        	
+	// HACK: DISABLES LINE
+	//SendMessage(hwnd, WM_SETICON, (WPARAM) ICON_BIG, (LPARAM) LoadImage(hinst, MAKEINTRESOURCE(IDI_CFGICON), IMAGE_ICON, 16, 16, LR_DEFAULTCOLOR|LR_SHARED)); //HACK: PuTTYTray / Icon Fix
+	
 	/*
 	 * Centre the window.
 	 */
@@ -472,7 +455,6 @@ static INT_PTR CALLBACK GenericMainDlgProc(HWND hwnd, UINT msg,
 	    HTREEITEM hfirst = NULL;
 	    int i;
 	    char *path = NULL;
-            char *firstpath = NULL;
 
 	    for (i = 0; i < ctrlbox->nctrlsets; i++) {
 		struct controlset *s = ctrlbox->ctrlsets[i];
@@ -505,27 +487,18 @@ static INT_PTR CALLBACK GenericMainDlgProc(HWND hwnd, UINT msg,
 			c++;
 
 		item = treeview_insert(&tvfaff, j, c, s->pathname);
-		if (!hfirst) {
+		if (!hfirst)
 		    hfirst = item;
-                    firstpath = s->pathname;
-                }
 
 		path = s->pathname;
 	    }
 
 	    /*
-	     * Put the treeview selection on to the first panel in the
-	     * ctrlbox.
+	     * Put the treeview selection on to the Session panel.
+	     * This should also cause creation of the relevant
+	     * controls.
 	     */
 	    TreeView_SelectItem(treeview, hfirst);
-
-            /*
-             * And create the actual control set for that panel, to
-             * match the initial treeview selection.
-             */
-            assert(firstpath);   /* config.c must have given us _something_ */
-            create_controls(hwnd, firstpath);
-	    dlg_refresh(NULL, &dp);    /* and set up control values */
 	}
 
 	/*
@@ -544,18 +517,6 @@ static INT_PTR CALLBACK GenericMainDlgProc(HWND hwnd, UINT msg,
 	    }
 	}
 
-        /*
-         * Now we've finished creating our initial set of controls,
-         * it's safe to actually show the window without risking setup
-         * flicker.
-         */
-        ShowWindow(hwnd, SW_SHOWNORMAL);
-
-        /*
-         * Set the flag that activates a couple of the other message
-         * handlers below, which were disabled until now to avoid
-         * spurious firing during the above setup procedure.
-         */
 	SetWindowLongPtr(hwnd, GWLP_USERDATA, 1);
 	return 0;
       case WM_LBUTTONUP:
@@ -570,21 +531,10 @@ static INT_PTR CALLBACK GenericMainDlgProc(HWND hwnd, UINT msg,
       case WM_NOTIFY:
 	if (LOWORD(wParam) == IDCX_TREEVIEW &&
 	    ((LPNMHDR) lParam)->code == TVN_SELCHANGED) {
-            /*
-             * Selection-change events on the treeview cause us to do
-             * a flurry of control deletion and creation - but only
-             * after WM_INITDIALOG has finished. The initial
-             * selection-change event(s) during treeview setup are
-             * ignored.
-             */
-	    HTREEITEM i;
+	    HTREEITEM i =
+		TreeView_GetSelection(((LPNMHDR) lParam)->hwndFrom);
 	    TVITEM item;
 	    char buffer[64];
-
-            if (GetWindowLongPtr(hwnd, GWLP_USERDATA) != 1)
-                return 0;
-
-            i = TreeView_GetSelection(((LPNMHDR) lParam)->hwndFrom);
  
  	    SendMessage (hwnd, WM_SETREDRAW, FALSE, 0);
  
@@ -690,7 +640,7 @@ int do_config(void)
     int ret;
 
     ctrlbox = ctrl_new_box();
-    setup_config_box(ctrlbox, FALSE, 0, 0);
+    setup_config_box(ctrlbox, FALSE, 0, 0, 0); // HACK: PuttyTray / PuTTY File, Added 0 for 'int session_storagetype'
     win_setup_config_box(ctrlbox, &dp.hwnd, has_help(), FALSE, 0);
     dp_init(&dp);
     winctrl_init(&ctrls_base);
@@ -699,7 +649,7 @@ int do_config(void)
     dp_add_tree(&dp, &ctrls_panel);
     dp.wintitle = dupprintf("%s Configuration", appname);
     dp.errtitle = dupprintf("%s Error", appname);
-    dp.data = conf;
+    dp.data = &cfg;
     dlg_auto_set_fixed_pitch_flag(&dp);
     dp.shortcuts['g'] = TRUE;	       /* the treeview: `Cate&gory' */
 
@@ -717,15 +667,15 @@ int do_config(void)
 
 int do_reconfig(HWND hwnd, int protcfginfo)
 {
-    Conf *backup_conf;
-    int ret, protocol;
+    Config backup_cfg;
+    int ret;
 
-    backup_conf = conf_copy(conf);
+    backup_cfg = cfg;		       /* structure copy */
 
     ctrlbox = ctrl_new_box();
-    protocol = conf_get_int(conf, CONF_protocol);
-    setup_config_box(ctrlbox, TRUE, protocol, protcfginfo);
-    win_setup_config_box(ctrlbox, &dp.hwnd, has_help(), TRUE, protocol);
+    setup_config_box(ctrlbox, TRUE, cfg.protocol, protcfginfo, cfg.session_storagetype); // HACK: PuttyTray / PuTTY File, Added 'session_storagetype'
+    win_setup_config_box(ctrlbox, &dp.hwnd, has_help(), TRUE,
+                         cfg.protocol);
     dp_init(&dp);
     winctrl_init(&ctrls_base);
     winctrl_init(&ctrls_panel);
@@ -733,7 +683,7 @@ int do_reconfig(HWND hwnd, int protcfginfo)
     dp_add_tree(&dp, &ctrls_panel);
     dp.wintitle = dupprintf("%s Reconfiguration", appname);
     dp.errtitle = dupprintf("%s Error", appname);
-    dp.data = conf;
+    dp.data = &cfg;
     dlg_auto_set_fixed_pitch_flag(&dp);
     dp.shortcuts['g'] = TRUE;	       /* the treeview: `Cate&gory' */
 
@@ -746,9 +696,7 @@ int do_reconfig(HWND hwnd, int protcfginfo)
     dp_cleanup(&dp);
 
     if (!ret)
-	conf_copy_into(conf, backup_conf);
-
-    conf_free(backup_conf);
+	cfg = backup_cfg;	       /* structure copy */
 
     return ret;
 }
@@ -796,8 +744,8 @@ void showabout(HWND hwnd)
     DialogBox(hinst, MAKEINTRESOURCE(IDD_ABOUTBOX), hwnd, AboutProc);
 }
 
-int verify_ssh_host_key(void *frontend, char *host, int port,
-                        const char *keytype, char *keystr, char *fingerprint,
+int verify_ssh_host_key(void *frontend, char *host, int port, char *keytype,
+                        char *keystr, char *fingerprint,
                         void (*callback)(void *ctx, int result), void *ctx)
 {
     int ret;
@@ -842,31 +790,31 @@ int verify_ssh_host_key(void *frontend, char *host, int port,
     if (ret == 0)		       /* success - key matched OK */
 	return 1;
     else if (ret == 2) {	       /* key was different */
-	int mbret;
-	char *text = dupprintf(wrongmsg, appname, keytype, fingerprint,
-			       appname);
-	char *caption = dupprintf(mbtitle, appname);
-	mbret = message_box(text, caption,
-			    MB_ICONWARNING | MB_YESNOCANCEL | MB_DEFBUTTON3,
-			    HELPCTXID(errors_hostkey_changed));
-	assert(mbret==IDYES || mbret==IDNO || mbret==IDCANCEL);
-	sfree(text);
-	sfree(caption);
+	int mbret = IDYES;
+	//char *text = dupprintf(wrongmsg, appname, keytype, fingerprint,
+	//		       appname);
+	//char *caption = dupprintf(mbtitle, appname);
+	//mbret = message_box(text, caption,
+	//		    MB_ICONWARNING | MB_YESNOCANCEL | MB_DEFBUTTON3,
+	//		    HELPCTXID(errors_hostkey_changed));
+	//assert(mbret==IDYES || mbret==IDNO || mbret==IDCANCEL);
+	//sfree(text);
+	//sfree(caption);
 	if (mbret == IDYES) {
 	    store_host_key(host, port, keytype, keystr);
 	    return 1;
 	} else if (mbret == IDNO)
 	    return 1;
     } else if (ret == 1) {	       /* key was absent */
-	int mbret;
-	char *text = dupprintf(absentmsg, keytype, fingerprint, appname);
-	char *caption = dupprintf(mbtitle, appname);
-	mbret = message_box(text, caption,
-			    MB_ICONWARNING | MB_YESNOCANCEL | MB_DEFBUTTON3,
-			    HELPCTXID(errors_hostkey_absent));
-	assert(mbret==IDYES || mbret==IDNO || mbret==IDCANCEL);
-	sfree(text);
-	sfree(caption);
+	int mbret = IDYES;
+	//char *text = dupprintf(absentmsg, keytype, fingerprint, appname);
+	//char *caption = dupprintf(mbtitle, appname);
+	//mbret = message_box(text, caption,
+	//		    MB_ICONWARNING | MB_YESNOCANCEL | MB_DEFBUTTON3,
+	//		    HELPCTXID(errors_hostkey_absent));
+	//assert(mbret==IDYES || mbret==IDNO || mbret==IDCANCEL);
+	//sfree(text);
+	//sfree(caption);
 	if (mbret == IDYES) {
 	    store_host_key(host, port, keytype, keystr);
 	    return 1;
@@ -905,38 +853,11 @@ int askalg(void *frontend, const char *algtype, const char *algname,
 	return 0;
 }
 
-int askhk(void *frontend, const char *algname, const char *betteralgs,
-          void (*callback)(void *ctx, int result), void *ctx)
-{
-    static const char mbtitle[] = "%s Security Alert";
-    static const char msg[] =
-	"The first host key type we have stored for this server\n"
-	"is %s, which is below the configured warning threshold.\n"
-	"The server also provides the following types of host key\n"
-        "above the threshold, which we do not have stored:\n"
-        "%s\n"
-	"Do you want to continue with this connection?\n";
-    char *message, *title;
-    int mbret;
-
-    message = dupprintf(msg, algname, betteralgs);
-    title = dupprintf(mbtitle, appname);
-    mbret = MessageBox(NULL, message, title,
-		       MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2);
-    socket_reselect_all();
-    sfree(message);
-    sfree(title);
-    if (mbret == IDYES)
-	return 1;
-    else
-	return 0;
-}
-
 /*
  * Ask whether to wipe a session log file before writing to it.
  * Returns 2 for wipe, 1 for append, 0 for cancel (don't log).
  */
-int askappend(void *frontend, Filename *filename,
+int askappend(void *frontend, Filename filename,
 	      void (*callback)(void *ctx, int result), void *ctx)
 {
     static const char msgtemplate[] =
@@ -950,7 +871,7 @@ int askappend(void *frontend, Filename *filename,
     char *mbtitle;
     int mbret;
 
-    message = dupprintf(msgtemplate, FILENAME_MAX, filename->path);
+    message = dupprintf(msgtemplate, FILENAME_MAX, filename.path);
     mbtitle = dupprintf("%s Log to File", appname);
 
     mbret = MessageBox(NULL, message, mbtitle,

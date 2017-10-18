@@ -41,12 +41,12 @@ void notify_remote_exit(void *frontend)
 {
 }
 
-void timer_change_notify(unsigned long next)
+void timer_change_notify(long next)
 {
 }
 
-int verify_ssh_host_key(void *frontend, char *host, int port,
-                        const char *keytype, char *keystr, char *fingerprint,
+int verify_ssh_host_key(void *frontend, char *host, int port, char *keytype,
+                        char *keystr, char *fingerprint,
                         void (*callback)(void *ctx, int result), void *ctx)
 {
     int ret;
@@ -131,8 +131,6 @@ int verify_ssh_host_key(void *frontend, char *host, int port,
 	fflush(stderr);
     }
 
-    line[0] = '\0';         /* fail safe if ReadFile returns no data */
-
     hin = GetStdHandle(STD_INPUT_HANDLE);
     GetConsoleMode(hin, &savemode);
     SetConsoleMode(hin, (savemode | ENABLE_ECHO_INPUT |
@@ -199,58 +197,11 @@ int askalg(void *frontend, const char *algtype, const char *algname,
     }
 }
 
-int askhk(void *frontend, const char *algname, const char *betteralgs,
-          void (*callback)(void *ctx, int result), void *ctx)
-{
-    HANDLE hin;
-    DWORD savemode, i;
-
-    static const char msg[] =
-	"The first host key type we have stored for this server\n"
-	"is %s, which is below the configured warning threshold.\n"
-	"The server also provides the following types of host key\n"
-        "above the threshold, which we do not have stored:\n"
-        "%s\n"
-	"Continue with connection? (y/n) ";
-    static const char msg_batch[] =
-	"The first host key type we have stored for this server\n"
-	"is %s, which is below the configured warning threshold.\n"
-	"The server also provides the following types of host key\n"
-        "above the threshold, which we do not have stored:\n"
-        "%s\n"
-	"Connection abandoned.\n";
-    static const char abandoned[] = "Connection abandoned.\n";
-
-    char line[32];
-
-    if (console_batch_mode) {
-	fprintf(stderr, msg_batch, algname, betteralgs);
-	return 0;
-    }
-
-    fprintf(stderr, msg, algname, betteralgs);
-    fflush(stderr);
-
-    hin = GetStdHandle(STD_INPUT_HANDLE);
-    GetConsoleMode(hin, &savemode);
-    SetConsoleMode(hin, (savemode | ENABLE_ECHO_INPUT |
-			 ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT));
-    ReadFile(hin, line, sizeof(line) - 1, &i, NULL);
-    SetConsoleMode(hin, savemode);
-
-    if (line[0] == 'y' || line[0] == 'Y') {
-	return 1;
-    } else {
-	fprintf(stderr, abandoned);
-	return 0;
-    }
-}
-
 /*
  * Ask whether to wipe a session log file before writing to it.
  * Returns 2 for wipe, 1 for append, 0 for cancel (don't log).
  */
-int askappend(void *frontend, Filename *filename,
+int askappend(void *frontend, Filename filename,
 	      void (*callback)(void *ctx, int result), void *ctx)
 {
     HANDLE hin;
@@ -272,11 +223,11 @@ int askappend(void *frontend, Filename *filename,
     char line[32];
 
     if (console_batch_mode) {
-	fprintf(stderr, msgtemplate_batch, FILENAME_MAX, filename->path);
+	fprintf(stderr, msgtemplate_batch, FILENAME_MAX, filename.path);
 	fflush(stderr);
 	return 0;
     }
-    fprintf(stderr, msgtemplate, FILENAME_MAX, filename->path);
+    fprintf(stderr, msgtemplate, FILENAME_MAX, filename.path);
     fflush(stderr);
 
     hin = GetStdHandle(STD_INPUT_HANDLE);
@@ -330,11 +281,9 @@ void pgp_fingerprints(void)
 	  "one. See the manual for more information.\n"
 	  "(Note: these fingerprints have nothing to do with SSH!)\n"
 	  "\n"
-	  "PuTTY Master Key as of 2015 (RSA, 4096-bit):\n"
-	  "  " PGP_MASTER_KEY_FP "\n\n"
-	  "Original PuTTY Master Key (RSA, 1024-bit):\n"
+	  "PuTTY Master Key (RSA), 1024-bit:\n"
 	  "  " PGP_RSA_MASTER_KEY_FP "\n"
-	  "Original PuTTY Master Key (DSA, 1024-bit):\n"
+	  "PuTTY Master Key (DSA), 1024-bit:\n"
 	  "  " PGP_DSA_MASTER_KEY_FP "\n", stdout);
 }
 
@@ -355,8 +304,7 @@ static void console_data_untrusted(HANDLE hout, const char *data, int len)
     WriteFile(hout, data, len, &dummy, NULL);
 }
 
-int console_get_userpass_input(prompts_t *p,
-                               const unsigned char *in, int inlen)
+int console_get_userpass_input(prompts_t *p, unsigned char *in, int inlen)
 {
     HANDLE hin, hout;
     size_t curr_prompt;
@@ -367,7 +315,7 @@ int console_get_userpass_input(prompts_t *p,
     {
 	int i;
 	for (i = 0; i < (int)p->n_prompts; i++)
-            prompt_set_result(p->prompts[i], "");
+	    memset(p->prompts[i]->result, 0, p->prompts[i]->result_len);
     }
 
     /*
@@ -417,9 +365,9 @@ int console_get_userpass_input(prompts_t *p,
 
     for (curr_prompt = 0; curr_prompt < p->n_prompts; curr_prompt++) {
 
-	DWORD savemode, newmode;
-        int len;
+	DWORD savemode, newmode, i = 0;
 	prompt_t *pr = p->prompts[curr_prompt];
+	BOOL r;
 
 	GetConsoleMode(hin, &savemode);
 	newmode = savemode | ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT;
@@ -431,44 +379,25 @@ int console_get_userpass_input(prompts_t *p,
 
 	console_data_untrusted(hout, pr->prompt, strlen(pr->prompt));
 
-        len = 0;
-        while (1) {
-            DWORD ret = 0;
-            BOOL r;
-
-            prompt_ensure_result_size(pr, len * 5 / 4 + 512);
-
-            r = ReadFile(hin, pr->result + len, pr->resultsize - len - 1,
-                         &ret, NULL);
-
-            if (!r || ret == 0) {
-                len = -1;
-                break;
-            }
-            len += ret;
-            if (pr->result[len - 1] == '\n') {
-                len--;
-                if (pr->result[len - 1] == '\r')
-                    len--;
-                break;
-            }
-        }
+	r = ReadFile(hin, pr->result, pr->result_len - 1, &i, NULL);
 
 	SetConsoleMode(hin, savemode);
+
+	if ((int) i > pr->result_len)
+	    i = pr->result_len - 1;
+	else
+	    i = i - 2;
+	pr->result[i] = '\0';
 
 	if (!pr->echo) {
 	    DWORD dummy;
 	    WriteFile(hout, "\r\n", 2, &dummy, NULL);
 	}
 
-        if (len < 0) {
-            return 0;                  /* failure due to read error */
-        }
-
-	pr->result[len] = '\0';
     }
 
     return 1; /* success */
+
 }
 
 void frontend_keypress(void *handle)

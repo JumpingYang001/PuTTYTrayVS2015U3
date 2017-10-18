@@ -5,7 +5,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
-#include <limits.h>
 
 #include <time.h>
 #include <assert.h>
@@ -71,7 +70,7 @@
 
 #define has_compat(x) ( ((CL_##x)&term->compatibility_level) != 0 )
 
-const char *EMPTY_WINDOW_TITLE = "";
+char *EMPTY_WINDOW_TITLE = "";
 
 const char sco2ansicolour[] = { 0, 4, 2, 6, 1, 5, 3, 7 };
 
@@ -104,7 +103,6 @@ const wchar_t sel_nl[] = SEL_NL;
 static void resizeline(Terminal *, termline *, int);
 static termline *lineptr(Terminal *, int, int, int);
 static void unlineptr(termline *);
-static void check_line_size(Terminal *, termline *);
 static void do_paint(Terminal *, Context, int);
 static void erase_lots(Terminal *, int, int, int);
 static int find_last_nonempty_line(Terminal *, tree234 *);
@@ -996,7 +994,7 @@ static void resizeline(Terminal *term, termline *line, int cols)
 static int sblines(Terminal *term)
 {
     int sblines = count234(term->scrollback);
-    if (term->erase_to_scrollback &&
+    if (term->cfg.erase_to_scrollback &&
 	term->alt_which && term->alt_screen) {
 	    sblines += term->alt_sblines;
     }
@@ -1022,7 +1020,7 @@ static termline *lineptr(Terminal *term, int y, int lineno, int screen)
 
 	assert(!screen);
 
-	if (term->erase_to_scrollback &&
+	if (term->cfg.erase_to_scrollback &&
 	    term->alt_which && term->alt_screen) {
 	    altlines = term->alt_sblines;
 	}
@@ -1060,25 +1058,8 @@ static termline *lineptr(Terminal *term, int y, int lineno, int screen)
     }
     assert(line != NULL);
 
-    /*
-     * Here we resize lines to _at least_ the right length, but we
-     * don't truncate them. Truncation is done as a side effect of
-     * modifying the line.
-     *
-     * The point of this policy is to try to arrange that resizing the
-     * terminal window repeatedly - e.g. successive steps in an X11
-     * opaque window-resize drag, or resizing as a side effect of
-     * retiling by tiling WMs such as xmonad - does not throw away
-     * data gratuitously. Specifically, we want a sequence of resize
-     * operations with no terminal output between them to have the
-     * same effect as a single resize to the ultimate terminal size,
-     * and also (for the case in which xmonad narrows a window that's
-     * scrolling things) we want scrolling up new text at the bottom
-     * of a narrowed window to avoid truncating lines further up when
-     * the window is re-widened.
-     */
-    if (term->cols > line->cols)
-        resizeline(term, line, term->cols);
+    resizeline(term, line, term->cols);
+    /* FIXME: should we sort the compressed scrollback out here? */
 
     return line;
 }
@@ -1086,51 +1067,35 @@ static termline *lineptr(Terminal *term, int y, int lineno, int screen)
 #define lineptr(x) (lineptr)(term,x,__LINE__,FALSE)
 #define scrlineptr(x) (lineptr)(term,x,__LINE__,TRUE)
 
-/*
- * Coerce a termline to the terminal's current width. Unlike the
- * optional resize in lineptr() above, this is potentially destructive
- * of text, since it can shrink as well as grow the line.
- *
- * We call this whenever a termline is actually going to be modified.
- * Helpfully, putting a single call to this function in check_boundary
- * deals with _nearly_ all such cases, leaving only a few things like
- * bulk erase and ESC#8 to handle separately.
- */
-static void check_line_size(Terminal *term, termline *line)
-{
-    if (term->cols != line->cols)      /* trivial optimisation */
-        resizeline(term, line, term->cols);
-}
-
 static void term_schedule_tblink(Terminal *term);
 static void term_schedule_cblink(Terminal *term);
 
-static void term_timer(void *ctx, unsigned long now)
+static void term_timer(void *ctx, long now)
 {
     Terminal *term = (Terminal *)ctx;
     int update = FALSE;
 
-    if (term->tblink_pending && now == term->next_tblink) {
+    if (term->tblink_pending && now - term->next_tblink >= 0) {
 	term->tblinker = !term->tblinker;
 	term->tblink_pending = FALSE;
 	term_schedule_tblink(term);
 	update = TRUE;
     }
 
-    if (term->cblink_pending && now == term->next_cblink) {
+    if (term->cblink_pending && now - term->next_cblink >= 0) {
 	term->cblinker = !term->cblinker;
 	term->cblink_pending = FALSE;
 	term_schedule_cblink(term);
 	update = TRUE;
     }
 
-    if (term->in_vbell && now == term->vbell_end) {
+    if (term->in_vbell && now - term->vbell_end >= 0) {
 	term->in_vbell = FALSE;
 	update = TRUE;
     }
 
     if (update ||
-	(term->window_update_pending && now == term->next_update))
+	(term->window_update_pending && now - term->next_update >= 0))
 	term_update(term);
 }
 
@@ -1173,7 +1138,7 @@ static void term_schedule_tblink(Terminal *term)
  */
 static void term_schedule_cblink(Terminal *term)
 {
-    if (term->blink_cur && term->has_focus) {
+    if (term->cfg.blink_cur && term->has_focus) {
 	if (!term->cblink_pending)
 	    term->next_cblink = schedule_timer(CBLINK_DELAY, term_timer, term);
 	term->cblink_pending = TRUE;
@@ -1237,11 +1202,11 @@ static void power_on(Terminal *term, int clear)
 	for (i = 0; i < term->cols; i++)
 	    term->tabs[i] = (i % 8 == 0 ? TRUE : FALSE);
     }
-    term->alt_om = term->dec_om = conf_get_int(term->conf, CONF_dec_om);
+    term->alt_om = term->dec_om = term->cfg.dec_om;
     term->alt_ins = term->insert = FALSE;
     term->alt_wnext = term->wrapnext =
         term->save_wnext = term->alt_save_wnext = FALSE;
-    term->alt_wrap = term->wrap = conf_get_int(term->conf, CONF_wrap_mode);
+    term->alt_wrap = term->wrap = term->cfg.wrap_mode;
     term->alt_cset = term->cset = term->save_cset = term->alt_save_cset = 0;
     term->alt_utf = term->utf = term->save_utf = term->alt_save_utf = 0;
     term->utf_state = 0;
@@ -1256,22 +1221,20 @@ static void power_on(Terminal *term, int clear)
     term->default_attr = term->save_attr =
 	term->alt_save_attr = term->curr_attr = ATTR_DEFAULT;
     term->term_editing = term->term_echoing = FALSE;
-    term->app_cursor_keys = conf_get_int(term->conf, CONF_app_cursor);
-    term->app_keypad_keys = conf_get_int(term->conf, CONF_app_keypad);
-    term->use_bce = conf_get_int(term->conf, CONF_bce);
-    term->blink_is_real = conf_get_int(term->conf, CONF_blinktext);
+    term->app_cursor_keys = term->cfg.app_cursor;
+    term->app_keypad_keys = term->cfg.app_keypad;
+    term->use_bce = term->cfg.bce;
+    term->blink_is_real = term->cfg.blinktext;
     term->erase_char = term->basic_erase_char;
     term->alt_which = 0;
     term_print_finish(term);
     term->xterm_mouse = 0;
-    term->xterm_extended_mouse = 0;
-    term->urxvt_extended_mouse = 0;
     set_raw_mouse_mode(term->frontend, FALSE);
     term->bracketed_paste = FALSE;
     {
 	int i;
 	for (i = 0; i < 256; i++)
-	    term->wordness[i] = conf_get_int_int(term->conf, CONF_wordness, i);
+	    term->wordness[i] = term->cfg.wordness[i];
     }
     if (term->screen) {
 	swap_screen(term, 1, FALSE, FALSE);
@@ -1304,7 +1267,7 @@ void term_update(Terminal *term)
     ctx = get_ctx(term->frontend);
     if (ctx) {
 	int need_sbar_update = term->seen_disp_event;
-	if (term->seen_disp_event && term->scroll_on_disp) {
+	if (term->seen_disp_event && term->cfg.scroll_on_disp) {
 	    term->disptop = 0;	       /* return to main screen */
 	    term->seen_disp_event = 0;
 	    need_sbar_update = TRUE;
@@ -1343,7 +1306,7 @@ void term_seen_key_event(Terminal *term)
     /*
      * Reset the scrollback on keypress, if we're doing that.
      */
-    if (term->scroll_on_key) {
+    if (term->cfg.scroll_on_key) {
 	term->disptop = 0;	       /* return to main screen */
 	seen_disp_event(term);
     }
@@ -1356,7 +1319,7 @@ void term_pwron(Terminal *term, int clear)
 {
     power_on(term, clear);
     if (term->ldisc)		       /* cause ldisc to notice changes */
-	ldisc_echoedit_update(term->ldisc);
+	ldisc_send(term->ldisc, NULL, 0, 0);
     term->disptop = 0;
     deselect(term);
     term_update(term);
@@ -1371,84 +1334,12 @@ static void set_erase_char(Terminal *term)
 }
 
 /*
- * We copy a bunch of stuff out of the Conf structure into local
- * fields in the Terminal structure, to avoid the repeated tree234
- * lookups which would be involved in fetching them from the former
- * every time.
- */
-void term_copy_stuff_from_conf(Terminal *term)
-{
-    term->ansi_colour = conf_get_int(term->conf, CONF_ansi_colour);
-    term->pastedelay = conf_get_int(term->conf, CONF_pastedelay);
-    term->arabicshaping = conf_get_int(term->conf, CONF_arabicshaping);
-    term->beep = conf_get_int(term->conf, CONF_beep);
-    term->bellovl = conf_get_int(term->conf, CONF_bellovl);
-    term->bellovl_n = conf_get_int(term->conf, CONF_bellovl_n);
-    term->bellovl_s = conf_get_int(term->conf, CONF_bellovl_s);
-    term->bellovl_t = conf_get_int(term->conf, CONF_bellovl_t);
-    term->bidi = conf_get_int(term->conf, CONF_bidi);
-    term->bksp_is_delete = conf_get_int(term->conf, CONF_bksp_is_delete);
-    term->blink_cur = conf_get_int(term->conf, CONF_blink_cur);
-    term->blinktext = conf_get_int(term->conf, CONF_blinktext);
-    term->cjk_ambig_wide = conf_get_int(term->conf, CONF_cjk_ambig_wide);
-    term->conf_height = conf_get_int(term->conf, CONF_height);
-    term->conf_width = conf_get_int(term->conf, CONF_width);
-    term->crhaslf = conf_get_int(term->conf, CONF_crhaslf);
-    term->erase_to_scrollback = conf_get_int(term->conf, CONF_erase_to_scrollback);
-    term->funky_type = conf_get_int(term->conf, CONF_funky_type);
-    term->lfhascr = conf_get_int(term->conf, CONF_lfhascr);
-    term->logflush = conf_get_int(term->conf, CONF_logflush);
-    term->logtype = conf_get_int(term->conf, CONF_logtype);
-    term->mouse_override = conf_get_int(term->conf, CONF_mouse_override);
-    term->nethack_keypad = conf_get_int(term->conf, CONF_nethack_keypad);
-    term->no_alt_screen = conf_get_int(term->conf, CONF_no_alt_screen);
-    term->no_applic_c = conf_get_int(term->conf, CONF_no_applic_c);
-    term->no_applic_k = conf_get_int(term->conf, CONF_no_applic_k);
-    term->no_dbackspace = conf_get_int(term->conf, CONF_no_dbackspace);
-    term->no_mouse_rep = conf_get_int(term->conf, CONF_no_mouse_rep);
-    term->no_remote_charset = conf_get_int(term->conf, CONF_no_remote_charset);
-    term->no_remote_resize = conf_get_int(term->conf, CONF_no_remote_resize);
-    term->no_remote_wintitle = conf_get_int(term->conf, CONF_no_remote_wintitle);
-    term->no_remote_clearscroll = conf_get_int(term->conf, CONF_no_remote_clearscroll);
-    term->rawcnp = conf_get_int(term->conf, CONF_rawcnp);
-    term->rect_select = conf_get_int(term->conf, CONF_rect_select);
-    term->remote_qtitle_action = conf_get_int(term->conf, CONF_remote_qtitle_action);
-    term->rxvt_homeend = conf_get_int(term->conf, CONF_rxvt_homeend);
-    term->scroll_on_disp = conf_get_int(term->conf, CONF_scroll_on_disp);
-    term->scroll_on_key = conf_get_int(term->conf, CONF_scroll_on_key);
-    term->xterm_256_colour = conf_get_int(term->conf, CONF_xterm_256_colour);
-
-    /*
-     * Parse the control-character escapes in the configured
-     * answerback string.
-     */
-    {
-	char *answerback = conf_get_str(term->conf, CONF_answerback);
-	int maxlen = strlen(answerback);
-
-	term->answerback = snewn(maxlen, char);
-	term->answerbacklen = 0;
-
-	while (*answerback) {
-	    char *n;
-	    char c = ctrlparse(answerback, &n);
-	    if (n) {
-		term->answerback[term->answerbacklen++] = c;
-		answerback = n;
-	    } else {
-		term->answerback[term->answerbacklen++] = *answerback++;
-	    }
-	}
-    }
-}
-
-/*
  * When the user reconfigures us, we need to check the forbidden-
  * alternate-screen config option, disable raw mouse mode if the
  * user has disabled mouse reporting, and abandon a print job if
  * the user has disabled printing.
  */
-void term_reconfig(Terminal *term, Conf *conf)
+void term_reconfig(Terminal *term, Config *cfg)
 {
     /*
      * Before adopting the new config, check all those terminal
@@ -1460,28 +1351,21 @@ void term_reconfig(Terminal *term, Conf *conf)
     int reset_wrap, reset_decom, reset_bce, reset_tblink, reset_charclass;
     int i;
 
-    reset_wrap = (conf_get_int(term->conf, CONF_wrap_mode) !=
-		  conf_get_int(conf, CONF_wrap_mode));
-    reset_decom = (conf_get_int(term->conf, CONF_dec_om) !=
-		   conf_get_int(conf, CONF_dec_om));
-    reset_bce = (conf_get_int(term->conf, CONF_bce) !=
-		 conf_get_int(conf, CONF_bce));
-    reset_tblink = (conf_get_int(term->conf, CONF_blinktext) !=
-		    conf_get_int(conf, CONF_blinktext));
+    reset_wrap = (term->cfg.wrap_mode != cfg->wrap_mode);
+    reset_decom = (term->cfg.dec_om != cfg->dec_om);
+    reset_bce = (term->cfg.bce != cfg->bce);
+    reset_tblink = (term->cfg.blinktext != cfg->blinktext);
     reset_charclass = 0;
-    for (i = 0; i < 256; i++)
-	if (conf_get_int_int(term->conf, CONF_wordness, i) !=
-	    conf_get_int_int(conf, CONF_wordness, i))
+    for (i = 0; i < lenof(term->cfg.wordness); i++)
+	if (term->cfg.wordness[i] != cfg->wordness[i])
 	    reset_charclass = 1;
 
     /*
      * If the bidi or shaping settings have changed, flush the bidi
      * cache completely.
      */
-    if (conf_get_int(term->conf, CONF_arabicshaping) !=
-	conf_get_int(conf, CONF_arabicshaping) ||
-	conf_get_int(term->conf, CONF_bidi) !=
-	conf_get_int(conf, CONF_bidi)) {
+    if (term->cfg.arabicshaping != cfg->arabicshaping ||
+	term->cfg.bidi != cfg->bidi) {
 	for (i = 0; i < term->bidi_cache_size; i++) {
 	    sfree(term->pre_bidi_cache[i].chars);
 	    sfree(term->post_bidi_cache[i].chars);
@@ -1492,41 +1376,39 @@ void term_reconfig(Terminal *term, Conf *conf)
 	}
     }
 
-    conf_free(term->conf);
-    term->conf = conf_copy(conf);
+    term->cfg = *cfg;		       /* STRUCTURE COPY */
 
     if (reset_wrap)
-	term->alt_wrap = term->wrap = conf_get_int(term->conf, CONF_wrap_mode);
+	term->alt_wrap = term->wrap = term->cfg.wrap_mode;
     if (reset_decom)
-	term->alt_om = term->dec_om = conf_get_int(term->conf, CONF_dec_om);
+	term->alt_om = term->dec_om = term->cfg.dec_om;
     if (reset_bce) {
-	term->use_bce = conf_get_int(term->conf, CONF_bce);
+	term->use_bce = term->cfg.bce;
 	set_erase_char(term);
     }
     if (reset_tblink) {
-	term->blink_is_real = conf_get_int(term->conf, CONF_blinktext);
+	term->blink_is_real = term->cfg.blinktext;
     }
     if (reset_charclass)
 	for (i = 0; i < 256; i++)
-	    term->wordness[i] = conf_get_int_int(term->conf, CONF_wordness, i);
+	    term->wordness[i] = term->cfg.wordness[i];
 
-    if (conf_get_int(term->conf, CONF_no_alt_screen))
+    if (term->cfg.no_alt_screen)
 	swap_screen(term, 0, FALSE, FALSE);
-    if (conf_get_int(term->conf, CONF_no_mouse_rep)) {
+    if (term->cfg.no_mouse_rep) {
 	term->xterm_mouse = 0;
 	set_raw_mouse_mode(term->frontend, 0);
     }
-    if (conf_get_int(term->conf, CONF_no_remote_charset)) {
+    if (term->cfg.no_remote_charset) {
 	term->cset_attr[0] = term->cset_attr[1] = CSET_ASCII;
 	term->sco_acs = term->alt_sco_acs = 0;
 	term->utf = 0;
     }
-    if (!conf_get_str(term->conf, CONF_printer)) {
+    if (!*term->cfg.printer || term->cfg.printclip) {
 	term_print_finish(term);
     }
     term_schedule_tblink(term);
     term_schedule_cblink(term);
-    term_copy_stuff_from_conf(term);
 }
 
 /*
@@ -1535,51 +1417,19 @@ void term_reconfig(Terminal *term, Conf *conf)
 void term_clrsb(Terminal *term)
 {
     unsigned char *line;
-    int i;
-
-    /*
-     * Scroll forward to the current screen, if we were back in the
-     * scrollback somewhere until now.
-     */
     term->disptop = 0;
-
-    /*
-     * Clear the actual scrollback.
-     */
     while ((line = delpos234(term->scrollback, 0)) != NULL) {
 	sfree(line);            /* this is compressed data, not a termline */
     }
-
-    /*
-     * When clearing the scrollback, we also truncate any termlines on
-     * the current screen which have remembered data from a previous
-     * larger window size. Rationale: clearing the scrollback is
-     * sometimes done to protect privacy, so the user intention is
-     * specifically that we should not retain evidence of what
-     * previously happened in the terminal, and that ought to include
-     * evidence to the right as well as evidence above.
-     */
-    for (i = 0; i < term->rows; i++)
-        check_line_size(term, scrlineptr(i));
-
-    /*
-     * There are now no lines of real scrollback which can be pulled
-     * back into the screen by a resize, and no lines of the alternate
-     * screen which should be displayed as if part of the scrollback.
-     */
     term->tempsblines = 0;
     term->alt_sblines = 0;
-
-    /*
-     * Update the scrollbar to reflect the new state of the world.
-     */
     update_sbar(term);
 }
 
 /*
  * Initialise the terminal.
  */
-Terminal *term_init(Conf *myconf, struct unicode_data *ucsdata,
+Terminal *term_init(Config *mycfg, struct unicode_data *ucsdata,
 		    void *frontend)
 {
     Terminal *term;
@@ -1591,13 +1441,14 @@ Terminal *term_init(Conf *myconf, struct unicode_data *ucsdata,
     term = snew(Terminal);
     term->frontend = frontend;
     term->ucsdata = ucsdata;
-    term->conf = conf_copy(myconf);
+    term->cfg = *mycfg;		       /* STRUCTURE COPY */
     term->logctx = NULL;
     term->compatibility_level = TM_PUTTY;
     strcpy(term->id_string, "\033[?6c");
     term->cblink_pending = term->tblink_pending = FALSE;
     term->paste_buffer = NULL;
     term->paste_len = 0;
+    term->last_paste = 0;
     bufchain_init(&term->inbuf);
     bufchain_init(&term->printer_buf);
     term->printing = term->only_printing = FALSE;
@@ -1613,8 +1464,6 @@ Terminal *term_init(Conf *myconf, struct unicode_data *ucsdata,
     term->termstate = TOPLEVEL;
     term->selstate = NO_SELECTION;
     term->curstype = 0;
-
-    term_copy_stuff_from_conf(term);
 
     term->screen = term->alt_screen = term->scrollback = NULL;
     term->tempsblines = 0;
@@ -1699,17 +1548,11 @@ void term_free(Terminal *term)
     for (i = 0; i < term->bidi_cache_size; i++) {
 	sfree(term->pre_bidi_cache[i].chars);
 	sfree(term->post_bidi_cache[i].chars);
-        sfree(term->post_bidi_cache[i].forward);
-        sfree(term->post_bidi_cache[i].backward);
     }
     sfree(term->pre_bidi_cache);
     sfree(term->post_bidi_cache);
 
-    sfree(term->tabs);
-
     expire_timer_context(term);
-
-    conf_free(term->conf);
 
     sfree(term);
 }
@@ -1795,8 +1638,7 @@ void term_size(Terminal *term, int newrows, int newcols, int newsavelines)
     while (term->rows > newrows) {
 	if (term->curs.y < term->rows - 1) {
 	    /* delete bottom row, unless it contains the cursor */
-            line = delpos234(term->screen, term->rows - 1);
-            freeline(line);
+	    sfree(delpos234(term->screen, term->rows - 1));
 	} else {
 	    /* push top row to scrollback */
 	    line = delpos234(term->screen, 0);
@@ -2058,7 +1900,7 @@ static void check_selection(Terminal *term, pos from, pos to)
 static void scroll(Terminal *term, int topline, int botline, int lines, int sb)
 {
     termline *line;
-    int i, seltop, scrollwinsize;
+    int i, seltop;
 #ifdef OPTIMISE_SCROLL
     int olddisptop, shift;
 #endif /* OPTIMISE_SCROLL */
@@ -2070,14 +1912,8 @@ static void scroll(Terminal *term, int topline, int botline, int lines, int sb)
     olddisptop = term->disptop;
     shift = lines;
 #endif /* OPTIMISE_SCROLL */
-
-    scrollwinsize = botline - topline + 1;
-
     if (lines < 0) {
-        lines = -lines;
-        if (lines > scrollwinsize)
-            lines = scrollwinsize;
-	while (lines-- > 0) {
+	while (lines < 0) {
 	    line = delpos234(term->screen, botline);
             resizeline(term, line, term->cols);
 	    for (i = 0; i < term->cols; i++)
@@ -2099,11 +1935,11 @@ static void scroll(Terminal *term, int topline, int botline, int lines, int sb)
 		    term->selend.x = 0;
 		}
 	    }
+
+	    lines++;
 	}
     } else {
-        if (lines > scrollwinsize)
-            lines = scrollwinsize;
-	while (lines-- > 0) {
+	while (lines > 0) {
 	    line = delpos234(term->screen, topline);
 #ifdef TERM_CC_DIAGS
 	    cc_check(line);
@@ -2189,6 +2025,8 @@ static void scroll(Terminal *term, int topline, int botline, int lines, int sb)
 		    }
 		}
 	    }
+
+	    lines--;
 	}
     }
 #ifdef OPTIMISE_SCROLL
@@ -2356,11 +2194,10 @@ static void check_boundary(Terminal *term, int x, int y)
     termline *ldata;
 
     /* Validate input coordinates, just in case. */
-    if (x <= 0 || x > term->cols)
+    if (x == 0 || x > term->cols)
 	return;
 
     ldata = scrlineptr(y);
-    check_line_size(term, ldata);
     if (x == term->cols) {
 	ldata->lattr &= ~LATTR_WRAPPED2;
     } else {
@@ -2417,7 +2254,7 @@ static void erase_lots(Terminal *term,
     if (start.y == 0 && start.x == 0 && end.x == 0 && erase_lattr)
 	erasing_lines_from_top = 1;
 
-    if (term->erase_to_scrollback && erasing_lines_from_top) {
+    if (term->cfg.erase_to_scrollback && erasing_lines_from_top) {
 	/* If it's a whole number of lines, starting at the top, and
 	 * we're fully erasing them, erase by scrolling and keep the
 	 * lines in the scrollback. */
@@ -2431,7 +2268,6 @@ static void erase_lots(Terminal *term,
     } else {
 	termline *ldata = scrlineptr(start.y);
 	while (poslt(start, end)) {
-            check_line_size(term, ldata);
 	    if (start.x == term->cols) {
 		if (!erase_lattr)
 		    ldata->lattr &= ~(LATTR_WRAPPED | LATTR_WRAPPED2);
@@ -2461,51 +2297,16 @@ static void insch(Terminal *term, int n)
 {
     int dir = (n < 0 ? -1 : +1);
     int m, j;
-    pos eol;
+    pos cursplus;
     termline *ldata;
 
     n = (n < 0 ? -n : n);
     if (n > term->cols - term->curs.x)
 	n = term->cols - term->curs.x;
     m = term->cols - term->curs.x - n;
-
-    /*
-     * We must de-highlight the selection if it overlaps any part of
-     * the region affected by this operation, i.e. the region from the
-     * current cursor position to end-of-line, _unless_ the entirety
-     * of the selection is going to be moved to the left or right by
-     * this operation but otherwise unchanged, in which case we can
-     * simply move the highlight with the text.
-     */
-    eol.y = term->curs.y;
-    eol.x = term->cols;
-    if (poslt(term->curs, term->selend) && poslt(term->selstart, eol)) {
-        pos okstart = term->curs;
-        pos okend = eol;
-        if (dir > 0) {
-            /* Insertion: n characters at EOL will be splatted. */
-            okend.x -= n;
-        } else {
-            /* Deletion: n characters at cursor position will be splatted. */
-            okstart.x += n;
-        }
-        if (posle(okstart, term->selstart) && posle(term->selend, okend)) {
-            /* Selection is contained entirely in the interval
-             * [okstart,okend), so we need only adjust the selection
-             * bounds. */
-            term->selstart.x += dir * n;
-            term->selend.x += dir * n;
-            assert(term->selstart.x >= term->curs.x);
-            assert(term->selstart.x < term->cols);
-            assert(term->selend.x > term->curs.x);
-            assert(term->selend.x <= term->cols);
-        } else {
-            /* Selection is not wholly contained in that interval, so
-             * we must unhighlight it. */
-            deselect(term);
-        }
-    }
-
+    cursplus.y = term->curs.y;
+    cursplus.x = term->curs.x + n;
+    check_selection(term, term->curs, cursplus);
     check_boundary(term, term->curs.x, term->curs.y);
     if (dir < 0)
 	check_boundary(term, term->curs.x + n, term->curs.y);
@@ -2544,13 +2345,13 @@ static void toggle_mode(Terminal *term, int mode, int query, int state)
 		term->blink_is_real = FALSE;
 		term->vt52_bold = FALSE;
 	    } else {
-		term->blink_is_real = term->blinktext;
+		term->blink_is_real = term->cfg.blinktext;
 	    }
 	    term_schedule_tblink(term);
 	    break;
 	  case 3:		       /* DECCOLM: 80/132 columns */
 	    deselect(term);
-	    if (!term->no_remote_resize)
+	    if (!term->cfg.no_remote_resize)
 		request_resize(term->frontend, state ? 132 : 80, term->rows);
 	    term->reset_132 = state;
 	    term->alt_t = term->marg_t = 0;
@@ -2587,7 +2388,7 @@ static void toggle_mode(Terminal *term, int mode, int query, int state)
 	  case 10:		       /* DECEDM: set local edit mode */
 	    term->term_editing = state;
 	    if (term->ldisc)	       /* cause ldisc to notice changes */
-		ldisc_echoedit_update(term->ldisc);
+		ldisc_send(term->ldisc, NULL, 0, 0);
 	    break;
 	  case 25:		       /* DECTCEM: enable/disable cursor */
 	    compatibility2(OTHER, VT220);
@@ -2597,9 +2398,8 @@ static void toggle_mode(Terminal *term, int mode, int query, int state)
 	  case 47:		       /* alternate screen */
 	    compatibility(OTHER);
 	    deselect(term);
-	    swap_screen(term, term->no_alt_screen ? 0 : state, FALSE, FALSE);
-            if (term->scroll_on_disp)
-                term->disptop = 0;
+	    swap_screen(term, term->cfg.no_alt_screen ? 0 : state, FALSE, FALSE);
+	    term->disptop = 0;
 	    break;
 	  case 1000:		       /* xterm mouse 1 (normal) */
 	    term->xterm_mouse = state ? 1 : 0;
@@ -2609,35 +2409,27 @@ static void toggle_mode(Terminal *term, int mode, int query, int state)
 	    term->xterm_mouse = state ? 2 : 0;
 	    set_raw_mouse_mode(term->frontend, state);
 	    break;
-	  case 1006:		       /* xterm extended mouse */
-	    term->xterm_extended_mouse = state ? 1 : 0;
-	    break;
-	  case 1015:		       /* urxvt extended mouse */
-	    term->urxvt_extended_mouse = state ? 1 : 0;
-	    break;
 	  case 1047:                   /* alternate screen */
 	    compatibility(OTHER);
 	    deselect(term);
-	    swap_screen(term, term->no_alt_screen ? 0 : state, TRUE, TRUE);
-            if (term->scroll_on_disp)
-                term->disptop = 0;
+	    swap_screen(term, term->cfg.no_alt_screen ? 0 : state, TRUE, TRUE);
+	    term->disptop = 0;
 	    break;
 	  case 1048:                   /* save/restore cursor */
-	    if (!term->no_alt_screen)
+	    if (!term->cfg.no_alt_screen)
                 save_cursor(term, state);
 	    if (!state) seen_disp_event(term);
 	    break;
 	  case 1049:                   /* cursor & alternate screen */
-	    if (state && !term->no_alt_screen)
+	    if (state && !term->cfg.no_alt_screen)
 		save_cursor(term, state);
 	    if (!state) seen_disp_event(term);
 	    compatibility(OTHER);
 	    deselect(term);
-	    swap_screen(term, term->no_alt_screen ? 0 : state, TRUE, FALSE);
-	    if (!state && !term->no_alt_screen)
+	    swap_screen(term, term->cfg.no_alt_screen ? 0 : state, TRUE, FALSE);
+	    if (!state && !term->cfg.no_alt_screen)
 		save_cursor(term, state);
-            if (term->scroll_on_disp)
-                term->disptop = 0;
+	    term->disptop = 0;
 	    break;
 	  case 2004:		       /* xterm bracketed paste */
 	    term->bracketed_paste = state ? TRUE : FALSE;
@@ -2651,7 +2443,7 @@ static void toggle_mode(Terminal *term, int mode, int query, int state)
 	  case 12:		       /* SRM: set echo mode */
 	    term->term_echoing = !state;
 	    if (term->ldisc)	       /* cause ldisc to notice changes */
-		ldisc_echoedit_update(term->ldisc);
+		ldisc_send(term->ldisc, NULL, 0, 0);
 	    break;
 	  case 20:		       /* LNM: Return sends ... */
 	    term->cr_lf_return = state;
@@ -2676,14 +2468,14 @@ static void do_osc(Terminal *term)
 	switch (term->esc_args[0]) {
 	  case 0:
 	  case 1:
-	    if (!term->no_remote_wintitle)
+	    if (!term->cfg.no_remote_wintitle)
 		set_icon(term->frontend, term->osc_string);
 	    if (term->esc_args[0] == 1)
 		break;
 	    /* fall through: parameter 0 means set both */
 	  case 2:
 	  case 21:
-	    if (!term->no_remote_wintitle)
+	    if (!term->cfg.no_remote_wintitle)
 		set_title(term->frontend, term->osc_string);
 	    break;
 	}
@@ -2691,12 +2483,69 @@ static void do_osc(Terminal *term)
 }
 
 /*
+ * Windows clipboard support
+ * Diomidis Spinellis, June 2003
+ */
+static char *clip_b, *clip_bp;          /* Buffer, pointer to buffer insertion point */
+static size_t clip_bsiz, clip_remsiz;   /* Buffer, size, remaining size */
+static size_t clip_total;               /* Total read */
+
+#define CLIP_CHUNK 16384
+
+static void clipboard_init(void)
+{
+    if (clip_b)
+        sfree(clip_b);
+    clip_bp = clip_b = smalloc(clip_remsiz = clip_bsiz = CLIP_CHUNK);
+    clip_total = 0;
+}
+
+static void clipboard_data(void *buff,  int len)
+{
+    memcpy(clip_bp, buff, len);
+    clip_remsiz -= len;
+    clip_total += len;
+    clip_bp += len;
+    if (clip_remsiz < CLIP_CHUNK) {
+        clip_b = srealloc(clip_b, clip_bsiz *= 2);
+        clip_remsiz = clip_bsiz - clip_total;
+        clip_bp = clip_b + clip_total;
+    }
+}
+
+static void clipboard_copy(void)
+{
+    HANDLE hglb;
+
+    if (!OpenClipboard(NULL))
+        return; // error("Unable to open the clipboard");
+    if (!EmptyClipboard()) {
+        CloseClipboard();
+        return; // error("Unable to empty the clipboard");
+    }
+
+    hglb = GlobalAlloc(GMEM_DDESHARE, clip_total + 1);
+    if (hglb == NULL) {
+        CloseClipboard();
+        return; // error("Unable to allocate clipboard memory");
+    }
+    memcpy(hglb, clip_b, clip_total);
+    ((char *)hglb)[clip_total] = '\0';
+    SetClipboardData(CF_TEXT, hglb);
+    CloseClipboard();
+}
+
+
+/*
  * ANSI printing routines.
  */
-static void term_print_setup(Terminal *term, char *printer)
+static void term_print_setup(Terminal *term)
 {
     bufchain_clear(&term->printer_buf);
-    term->print_job = printer_start_job(printer);
+    if (term->cfg.printclip)
+        clipboard_init();
+    else
+        term->print_job = printer_start_job(term->cfg.printer);
 }
 static void term_print_flush(Terminal *term)
 {
@@ -2707,7 +2556,10 @@ static void term_print_flush(Terminal *term)
 	bufchain_prefix(&term->printer_buf, &data, &len);
 	if (len > size-5)
 	    len = size-5;
-	printer_job_data(term->print_job, data, len);
+        if (term->cfg.printclip)
+            clipboard_data(data, len);
+        else
+            printer_job_data(term->print_job, data, len);
 	bufchain_consume(&term->printer_buf, len);
     }
 }
@@ -2727,12 +2579,18 @@ static void term_print_finish(Terminal *term)
 	if (c == '\033' || c == '\233') {
 	    bufchain_consume(&term->printer_buf, size);
 	    break;
-	} else {
-	    printer_job_data(term->print_job, &c, 1);
+        } else {
+            if (term->cfg.printclip)
+                clipboard_data(&c, 1);
+            else
+                printer_job_data(term->print_job, &c, 1);
 	    bufchain_consume(&term->printer_buf, 1);
 	}
     }
-    printer_finish_job(term->print_job);
+    if (term->cfg.printclip)
+        clipboard_copy();
+    else
+        printer_finish_job(term->print_job);
     term->print_job = NULL;
     term->printing = term->only_printing = FALSE;
 }
@@ -2771,7 +2629,7 @@ static void term_out(Terminal *term)
 	     * Optionally log the session traffic to a file. Useful for
 	     * debugging and possibly also useful for actual logging.
 	     */
-	    if (term->logtype == LGTYP_DEBUG && term->logctx)
+	    if (term->cfg.logtype == LGTYP_DEBUG && term->logctx)
 		logtraffic(term->logctx, (unsigned char) c, LGTYP_DEBUG);
 	} else {
 	    c = unget;
@@ -2963,7 +2821,7 @@ static void term_out(Terminal *term)
 		term->curs.x--;
 	    term->wrapnext = FALSE;
 	    /* destructive backspace might be disabled */
-	    if (!term->no_dbackspace) {
+	    if (!term->cfg.no_dbackspace) {
 		check_boundary(term, term->curs.x, term->curs.y);
 		check_boundary(term, term->curs.x+1, term->curs.y);
 		copy_termchar(scrlineptr(term->curs.y),
@@ -2983,8 +2841,19 @@ static void term_out(Terminal *term)
 		 */
 		compatibility(ANSIMIN);
 		if (term->ldisc) {
+		    char abuf[lenof(term->cfg.answerback)], *s, *d;
+		    for (s = term->cfg.answerback, d = abuf; *s;) {
+			char *n;
+			char c = ctrlparse(s, &n);
+			if (n) {
+			    *d++ = c;
+			    s = n;
+			} else {
+			    *d++ = *s++;
+			}
+		    }
 		    lpage_send(term->ldisc, DEFAULT_CODEPAGE,
-			       term->answerback, term->answerbacklen, 0);
+			       abuf, d - abuf, 0);
 		}
 		break;
 	      case '\007':	      /* BEL: Bell */
@@ -3011,7 +2880,7 @@ static void term_out(Terminal *term)
 		     * t seconds ago.
 		     */
 		    while (term->beephead &&
-			   term->beephead->ticks < ticks - term->bellovl_t) {
+			   term->beephead->ticks < ticks - term->cfg.bellovl_t) {
 			struct beeptime *tmp = term->beephead;
 			term->beephead = tmp->next;
 			sfree(tmp);
@@ -3020,16 +2889,16 @@ static void term_out(Terminal *term)
 			term->nbeeps--;
 		    }
 
-		    if (term->bellovl && term->beep_overloaded &&
-			ticks - term->lastbeep >= (unsigned)term->bellovl_s) {
+		    if (term->cfg.bellovl && term->beep_overloaded &&
+			ticks - term->lastbeep >= (unsigned)term->cfg.bellovl_s) {
 			/*
 			 * If we're currently overloaded and the
 			 * last beep was more than s seconds ago,
 			 * leave overload mode.
 			 */
 			term->beep_overloaded = FALSE;
-		    } else if (term->bellovl && !term->beep_overloaded &&
-			       term->nbeeps >= term->bellovl_n) {
+		    } else if (term->cfg.bellovl && !term->beep_overloaded &&
+			       term->nbeeps >= term->cfg.bellovl_n) {
 			/*
 			 * Now, if we have n or more beeps
 			 * remaining in the queue, go into overload
@@ -3042,10 +2911,10 @@ static void term_out(Terminal *term)
 		    /*
 		     * Perform an actual beep if we're not overloaded.
 		     */
-		    if (!term->bellovl || !term->beep_overloaded) {
-			do_beep(term->frontend, term->beep);
+		    if (!term->cfg.bellovl || !term->beep_overloaded) {
+			do_beep(term->frontend, term->cfg.beep);
 
-			if (term->beep == BELL_VISUAL) {
+			if (term->cfg.beep == BELL_VISUAL) {
 			    term_schedule_vbell(term, FALSE, 0);
 			}
 		    }
@@ -3085,13 +2954,14 @@ static void term_out(Terminal *term)
 		term->curs.x = 0;
 		term->wrapnext = FALSE;
 		seen_disp_event(term);
+		term->paste_hold = 0;
 
-		if (term->crhaslf) {
-		    if (term->curs.y == term->marg_b)
-			scroll(term, term->marg_t, term->marg_b, 1, TRUE);
-		    else if (term->curs.y < term->rows - 1)
-			term->curs.y++;
-		}
+        if (term->cfg.crhaslf) {  
+		  if (term->curs.y == term->marg_b)
+		    scroll(term, term->marg_t, term->marg_b, 1, TRUE);
+		  else if (term->curs.y < term->rows - 1)
+		    term->curs.y++;
+        }
 		if (term->logctx)
 		    logtraffic(term->logctx, (unsigned char) c, LGTYP_ASCII);
 		break;
@@ -3099,8 +2969,7 @@ static void term_out(Terminal *term)
 		if (has_compat(SCOANSI)) {
 		    move(term, 0, 0, 0);
 		    erase_lots(term, FALSE, FALSE, TRUE);
-                    if (term->scroll_on_disp)
-                        term->disptop = 0;
+		    term->disptop = 0;
 		    term->wrapnext = FALSE;
 		    seen_disp_event(term);
 		    break;
@@ -3112,10 +2981,11 @@ static void term_out(Terminal *term)
 		    scroll(term, term->marg_t, term->marg_b, 1, TRUE);
 		else if (term->curs.y < term->rows - 1)
 		    term->curs.y++;
-		if (term->lfhascr)
+		if (term->cfg.lfhascr)
 		    term->curs.x = 0;
 		term->wrapnext = FALSE;
 		seen_disp_event(term);
+		term->paste_hold = 0;
 		if (term->logctx)
 		    logtraffic(term->logctx, (unsigned char) c, LGTYP_ASCII);
 		break;
@@ -3153,9 +3023,9 @@ static void term_out(Terminal *term)
 		    if (DIRECT_CHAR(c))
 			width = 1;
 		    if (!width)
-			width = (term->cjk_ambig_wide ?
-				 mk_wcwidth_cjk((unsigned int) c) :
-				 mk_wcwidth((unsigned int) c));
+			width = (term->cfg.cjk_ambig_wide ?
+				 mk_wcwidth_cjk((wchar_t) c) :
+				 mk_wcwidth((wchar_t) c));
 
 		    if (term->wrapnext && term->wrap && width > 0) {
 			cline->lattr |= LATTR_WRAPPED;
@@ -3374,14 +3244,13 @@ static void term_out(Terminal *term)
 		    compatibility(VT100);
 		    power_on(term, TRUE);
 		    if (term->ldisc)   /* cause ldisc to notice changes */
-			ldisc_echoedit_update(term->ldisc);
+			ldisc_send(term->ldisc, NULL, 0, 0);
 		    if (term->reset_132) {
-			if (!term->no_remote_resize)
+			if (!term->cfg.no_remote_resize)
 			    request_resize(term->frontend, 80, term->rows);
 			term->reset_132 = 0;
 		    }
-                    if (term->scroll_on_disp)
-                        term->disptop = 0;
+		    term->disptop = 0;
 		    seen_disp_event(term);
 		    break;
 		  case 'H':	       /* HTS: set a tab */
@@ -3398,7 +3267,6 @@ static void term_out(Terminal *term)
 
 			for (i = 0; i < term->rows; i++) {
 			    ldata = scrlineptr(i);
-                            check_line_size(term, ldata);
 			    for (j = 0; j < term->cols; j++) {
 				copy_termchar(ldata, j,
 					      &term->basic_erase_char);
@@ -3406,8 +3274,7 @@ static void term_out(Terminal *term)
 			    }
 			    ldata->lattr = LATTR_NORM;
 			}
-                        if (term->scroll_on_disp)
-                            term->disptop = 0;
+			term->disptop = 0;
 			seen_disp_event(term);
 			scrtop.x = scrtop.y = 0;
 			scrbot.x = 0;
@@ -3423,7 +3290,6 @@ static void term_out(Terminal *term)
 		    compatibility(VT100);
 		    {
 			int nlattr;
-			termline *ldata;
 
 			switch (ANSI(c, term->esc_query)) {
 			  case ANSI('3', '#'): /* DECDHL: 2*height, top */
@@ -3439,63 +3305,61 @@ static void term_out(Terminal *term)
 			    nlattr = LATTR_WIDE;
 			    break;
 			}
-			ldata = scrlineptr(term->curs.y);
-                        check_line_size(term, ldata);
-                        ldata->lattr = nlattr;
+			scrlineptr(term->curs.y)->lattr = nlattr;
 		    }
 		    break;
 		  /* GZD4: G0 designate 94-set */
 		  case ANSI('A', '('):
 		    compatibility(VT100);
-		    if (!term->no_remote_charset)
+		    if (!term->cfg.no_remote_charset)
 			term->cset_attr[0] = CSET_GBCHR;
 		    break;
 		  case ANSI('B', '('):
 		    compatibility(VT100);
-		    if (!term->no_remote_charset)
+		    if (!term->cfg.no_remote_charset)
 			term->cset_attr[0] = CSET_ASCII;
 		    break;
 		  case ANSI('0', '('):
 		    compatibility(VT100);
-		    if (!term->no_remote_charset)
+		    if (!term->cfg.no_remote_charset)
 			term->cset_attr[0] = CSET_LINEDRW;
 		    break;
 		  case ANSI('U', '('): 
 		    compatibility(OTHER);
-		    if (!term->no_remote_charset)
+		    if (!term->cfg.no_remote_charset)
 			term->cset_attr[0] = CSET_SCOACS; 
 		    break;
 		  /* G1D4: G1-designate 94-set */
 		  case ANSI('A', ')'):
 		    compatibility(VT100);
-		    if (!term->no_remote_charset)
+		    if (!term->cfg.no_remote_charset)
 			term->cset_attr[1] = CSET_GBCHR;
 		    break;
 		  case ANSI('B', ')'):
 		    compatibility(VT100);
-		    if (!term->no_remote_charset)
+		    if (!term->cfg.no_remote_charset)
 			term->cset_attr[1] = CSET_ASCII;
 		    break;
 		  case ANSI('0', ')'):
 		    compatibility(VT100);
-		    if (!term->no_remote_charset)
+		    if (!term->cfg.no_remote_charset)
 			term->cset_attr[1] = CSET_LINEDRW;
 		    break;
 		  case ANSI('U', ')'): 
 		    compatibility(OTHER);
-		    if (!term->no_remote_charset)
+		    if (!term->cfg.no_remote_charset)
 			term->cset_attr[1] = CSET_SCOACS; 
 		    break;
 		  /* DOCS: Designate other coding system */
 		  case ANSI('8', '%'):	/* Old Linux code */
 		  case ANSI('G', '%'):
 		    compatibility(OTHER);
-		    if (!term->no_remote_charset)
+		    if (!term->cfg.no_remote_charset)
 			term->utf = 1;
 		    break;
 		  case ANSI('@', '%'):
 		    compatibility(OTHER);
-		    if (!term->no_remote_charset)
+		    if (!term->cfg.no_remote_charset)
 			term->utf = 0;
 		    break;
 		}
@@ -3506,15 +3370,8 @@ static void term_out(Terminal *term)
 		    if (term->esc_nargs <= ARGS_MAX) {
 			if (term->esc_args[term->esc_nargs - 1] == ARG_DEFAULT)
 			    term->esc_args[term->esc_nargs - 1] = 0;
-			if (term->esc_args[term->esc_nargs - 1] <=
-			    UINT_MAX / 10 &&
-			    term->esc_args[term->esc_nargs - 1] * 10 <=
-			    UINT_MAX - c - '0')
-			    term->esc_args[term->esc_nargs - 1] =
-			        10 * term->esc_args[term->esc_nargs - 1] +
-			        c - '0';
-			else
-			    term->esc_args[term->esc_nargs - 1] = UINT_MAX;
+			term->esc_args[term->esc_nargs - 1] =
+			    10 * term->esc_args[term->esc_nargs - 1] + c - '0';
 		    }
 		    term->termstate = SEEN_CSI;
 		} else if (c == ';') {
@@ -3530,10 +3387,8 @@ static void term_out(Terminal *term)
 			term->esc_query = c;
 		    term->termstate = SEEN_CSI;
 		} else
-#define CLAMP(arg, lim) ((arg) = ((arg) > (lim)) ? (lim) : (arg))
 		    switch (ANSI(c, term->esc_query)) {
 		      case 'A':       /* CUU: move up N lines */
-			CLAMP(term->esc_args[0], term->rows);
 			move(term, term->curs.x,
 			     term->curs.y - def(term->esc_args[0], 1), 1);
 			seen_disp_event(term);
@@ -3542,7 +3397,6 @@ static void term_out(Terminal *term)
 			compatibility(ANSI);
 			/* FALLTHROUGH */
 		      case 'B':		/* CUD: Cursor down */
-			CLAMP(term->esc_args[0], term->rows);
 			move(term, term->curs.x,
 			     term->curs.y + def(term->esc_args[0], 1), 1);
 			seen_disp_event(term);
@@ -3558,27 +3412,23 @@ static void term_out(Terminal *term)
 			compatibility(ANSI);
 			/* FALLTHROUGH */
 		      case 'C':		/* CUF: Cursor right */ 
-			CLAMP(term->esc_args[0], term->cols);
 			move(term, term->curs.x + def(term->esc_args[0], 1),
 			     term->curs.y, 1);
 			seen_disp_event(term);
 			break;
 		      case 'D':       /* CUB: move left N cols */
-			CLAMP(term->esc_args[0], term->cols);
 			move(term, term->curs.x - def(term->esc_args[0], 1),
 			     term->curs.y, 1);
 			seen_disp_event(term);
 			break;
 		      case 'E':       /* CNL: move down N lines and CR */
 			compatibility(ANSI);
-			CLAMP(term->esc_args[0], term->rows);
 			move(term, 0,
 			     term->curs.y + def(term->esc_args[0], 1), 1);
 			seen_disp_event(term);
 			break;
 		      case 'F':       /* CPL: move up N lines and CR */
 			compatibility(ANSI);
-			CLAMP(term->esc_args[0], term->rows);
 			move(term, 0,
 			     term->curs.y - def(term->esc_args[0], 1), 1);
 			seen_disp_event(term);
@@ -3586,14 +3436,12 @@ static void term_out(Terminal *term)
 		      case 'G':	      /* CHA */
 		      case '`':       /* HPA: set horizontal posn */
 			compatibility(ANSI);
-			CLAMP(term->esc_args[0], term->cols);
 			move(term, def(term->esc_args[0], 1) - 1,
 			     term->curs.y, 0);
 			seen_disp_event(term);
 			break;
 		      case 'd':       /* VPA: set vertical posn */
 			compatibility(ANSI);
-			CLAMP(term->esc_args[0], term->rows);
 			move(term, term->curs.x,
 			     ((term->dec_om ? term->marg_t : 0) +
 			      def(term->esc_args[0], 1) - 1),
@@ -3604,8 +3452,6 @@ static void term_out(Terminal *term)
 		      case 'f':      /* HVP: set horz and vert posns at once */
 			if (term->esc_nargs < 2)
 			    term->esc_args[1] = ARG_DEFAULT;
-			CLAMP(term->esc_args[0], term->rows);
-			CLAMP(term->esc_args[1], term->cols);
 			move(term, def(term->esc_args[1], 1) - 1,
 			     ((term->dec_om ? term->marg_t : 0) +
 			      def(term->esc_args[0], 1) - 1),
@@ -3618,8 +3464,7 @@ static void term_out(Terminal *term)
 			    if (i == 3) {
 				/* Erase Saved Lines (xterm)
 				 * This follows Thomas Dickey's xterm. */
-                                if (!term->no_remote_clearscroll)
-                                    term_clrsb(term);
+				term_clrsb(term);
 			    } else {
 				i++;
 				if (i > 3)
@@ -3627,8 +3472,7 @@ static void term_out(Terminal *term)
 				erase_lots(term, FALSE, !!(i & 2), !!(i & 1));
 			    }
 			}
-			if (term->scroll_on_disp)
-                            term->disptop = 0;
+			term->disptop = 0;
 			seen_disp_event(term);
 			break;
 		      case 'K':       /* EL: erase line or parts of it */
@@ -3642,7 +3486,6 @@ static void term_out(Terminal *term)
 			break;
 		      case 'L':       /* IL: insert lines */
 			compatibility(VT102);
-			CLAMP(term->esc_args[0], term->rows);
 			if (term->curs.y <= term->marg_b)
 			    scroll(term, term->curs.y, term->marg_b,
 				   -def(term->esc_args[0], 1), FALSE);
@@ -3650,7 +3493,6 @@ static void term_out(Terminal *term)
 			break;
 		      case 'M':       /* DL: delete lines */
 			compatibility(VT102);
-			CLAMP(term->esc_args[0], term->rows);
 			if (term->curs.y <= term->marg_b)
 			    scroll(term, term->curs.y, term->marg_b,
 				   def(term->esc_args[0], 1),
@@ -3660,13 +3502,11 @@ static void term_out(Terminal *term)
 		      case '@':       /* ICH: insert chars */
 			/* XXX VTTEST says this is vt220, vt510 manual says vt102 */
 			compatibility(VT102);
-			CLAMP(term->esc_args[0], term->cols);
 			insch(term, def(term->esc_args[0], 1));
 			seen_disp_event(term);
 			break;
 		      case 'P':       /* DCH: delete chars */
 			compatibility(VT102);
-			CLAMP(term->esc_args[0], term->cols);
 			insch(term, -def(term->esc_args[0], 1));
 			seen_disp_event(term);
 			break;
@@ -3703,15 +3543,12 @@ static void term_out(Terminal *term)
 		      case ANSI_QUE('i'):
 			compatibility(VT100);
 			{
-			    char *printer;
 			    if (term->esc_nargs != 1) break;
-			    if (term->esc_args[0] == 5 && 
-				(printer = conf_get_str(term->conf,
-							CONF_printer))[0]) {
+			    if (term->esc_args[0] == 5 && (*term->cfg.printer || term->cfg.printclip)) {
 				term->printing = TRUE;
 				term->only_printing = !term->esc_query;
 				term->print_state = 0;
-				term_print_setup(term, printer);
+				term_print_setup(term);
 			    } else if (term->esc_args[0] == 4 &&
 				       term->printing) {
 				term_print_finish(term);
@@ -3744,8 +3581,6 @@ static void term_out(Terminal *term)
 			compatibility(VT100);
 			if (term->esc_nargs <= 2) {
 			    int top, bot;
-			    CLAMP(term->esc_args[0], term->rows);
-			    CLAMP(term->esc_args[1], term->rows);
 			    top = def(term->esc_args[0], 1) - 1;
 			    bot = (term->esc_nargs <= 1
 				   || term->esc_args[1] == 0 ?
@@ -3836,15 +3671,15 @@ static void term_out(Terminal *term)
 				    break;
 				  case 10:      /* SCO acs off */
 				    compatibility(SCOANSI);
-				    if (term->no_remote_charset) break;
+				    if (term->cfg.no_remote_charset) break;
 				    term->sco_acs = 0; break;
 				  case 11:      /* SCO acs on */
 				    compatibility(SCOANSI);
-				    if (term->no_remote_charset) break;
+				    if (term->cfg.no_remote_charset) break;
 				    term->sco_acs = 1; break;
 				  case 12:      /* SCO acs on, |0x80 */
 				    compatibility(SCOANSI);
-				    if (term->no_remote_charset) break;
+				    if (term->cfg.no_remote_charset) break;
 				    term->sco_acs = 2; break;
 				  case 22:	/* disable bold */
 				    compatibility2(OTHER, VT220);
@@ -3967,7 +3802,7 @@ static void term_out(Terminal *term)
 			    && (term->esc_args[0] < 1 ||
 				term->esc_args[0] >= 24)) {
 			    compatibility(VT340TEXT);
-			    if (!term->no_remote_resize)
+			    if (!term->cfg.no_remote_resize)
 				request_resize(term->frontend, term->cols,
 					       def(term->esc_args[0], 24));
 			    deselect(term);
@@ -3978,8 +3813,7 @@ static void term_out(Terminal *term)
 
 			    switch (term->esc_args[0]) {
 				int x, y, len;
-				char buf[80];
-                                const char *p;
+				char buf[80], *p;
 			      case 1:
 				set_iconic(term->frontend, FALSE);
 				break;
@@ -3988,7 +3822,7 @@ static void term_out(Terminal *term)
 				break;
 			      case 3:
 				if (term->esc_nargs >= 3) {
-				    if (!term->no_remote_resize)
+				    if (!term->cfg.no_remote_resize)
 					move_window(term->frontend,
 						    def(term->esc_args[1], 0),
 						    def(term->esc_args[2], 0));
@@ -4013,10 +3847,10 @@ static void term_out(Terminal *term)
 				break;
 			      case 8:
 				if (term->esc_nargs >= 3) {
-				    if (!term->no_remote_resize)
+				    if (!term->cfg.no_remote_resize)
 					request_resize(term->frontend,
-						       def(term->esc_args[2], term->conf_width),
-						       def(term->esc_args[1], term->conf_height));
+						       def(term->esc_args[2], term->cfg.width),
+						       def(term->esc_args[1], term->cfg.height));
 				}
 				break;
 			      case 9:
@@ -4034,9 +3868,7 @@ static void term_out(Terminal *term)
 			      case 13:
 				if (term->ldisc) {
 				    get_window_pos(term->frontend, &x, &y);
-				    len = sprintf(buf, "\033[3;%u;%ut",
-                                                  (unsigned)x,
-                                                  (unsigned)y);
+				    len = sprintf(buf, "\033[3;%d;%dt", x, y);
 				    ldisc_send(term->ldisc, buf, len, 0);
 				}
 				break;
@@ -4073,8 +3905,8 @@ static void term_out(Terminal *term)
 				break;
 			      case 20:
 				if (term->ldisc &&
-				    term->remote_qtitle_action != TITLE_NONE) {
-				    if(term->remote_qtitle_action == TITLE_REAL)
+				    term->cfg.remote_qtitle_action != TITLE_NONE) {
+				    if(term->cfg.remote_qtitle_action == TITLE_REAL)
 					p = get_window_title(term->frontend, TRUE);
 				    else
 					p = EMPTY_WINDOW_TITLE;
@@ -4086,8 +3918,8 @@ static void term_out(Terminal *term)
 				break;
 			      case 21:
 				if (term->ldisc &&
-				    term->remote_qtitle_action != TITLE_NONE) {
-				    if(term->remote_qtitle_action == TITLE_REAL)
+				    term->cfg.remote_qtitle_action != TITLE_NONE) {
+				    if(term->cfg.remote_qtitle_action == TITLE_REAL)
 					p = get_window_title(term->frontend, FALSE);
 				    else
 					p = EMPTY_WINDOW_TITLE;
@@ -4101,7 +3933,6 @@ static void term_out(Terminal *term)
 			}
 			break;
 		      case 'S':		/* SU: Scroll up */
-			CLAMP(term->esc_args[0], term->rows);
 			compatibility(SCOANSI);
 			scroll(term, term->marg_t, term->marg_b,
 			       def(term->esc_args[0], 1), TRUE);
@@ -4109,7 +3940,6 @@ static void term_out(Terminal *term)
 			seen_disp_event(term);
 			break;
 		      case 'T':		/* SD: Scroll down */
-			CLAMP(term->esc_args[0], term->rows);
 			compatibility(SCOANSI);
 			scroll(term, term->marg_t, term->marg_b,
 			       -def(term->esc_args[0], 1), TRUE);
@@ -4125,10 +3955,10 @@ static void term_out(Terminal *term)
 			 */
 			compatibility(VT420);
 			if (term->esc_nargs == 1 && term->esc_args[0] > 0) {
-			    if (!term->no_remote_resize)
+			    if (!term->cfg.no_remote_resize)
 				request_resize(term->frontend, term->cols,
 					       def(term->esc_args[0],
-						   term->conf_height));
+						   term->cfg.height));
 			    deselect(term);
 			}
 			break;
@@ -4140,11 +3970,10 @@ static void term_out(Terminal *term)
 			 */
 			compatibility(VT340TEXT);
 			if (term->esc_nargs <= 1) {
-			    if (!term->no_remote_resize)
+			    if (!term->cfg.no_remote_resize)
 				request_resize(term->frontend,
 					       def(term->esc_args[0],
-						   term->conf_width),
-					       term->rows);
+						   term->cfg.width), term->rows);
 			    deselect(term);
 			}
 			break;
@@ -4152,7 +3981,6 @@ static void term_out(Terminal *term)
 			/* XXX VTTEST says this is vt220, vt510 manual
 			 * says vt100 */
 			compatibility(ANSIMIN);
-			CLAMP(term->esc_args[0], term->cols);
 			{
 			    int n = def(term->esc_args[0], 1);
 			    pos cursplus;
@@ -4186,7 +4014,6 @@ static void term_out(Terminal *term)
 			break;
 		      case 'Z':		/* CBT */
 			compatibility(OTHER);
-			CLAMP(term->esc_args[0], term->cols);
 			{
 			    int i = def(term->esc_args[0], 1);
 			    pos old_curs = term->curs;
@@ -4247,7 +4074,7 @@ static void term_out(Terminal *term)
 			break;
 		      case ANSI('F', '='):      /* set normal foreground */
 			compatibility(SCOANSI);
-			if (term->esc_args[0] < 16) {
+			if (term->esc_args[0] >= 0 && term->esc_args[0] < 16) {
 			    long colour =
  				(sco2ansicolour[term->esc_args[0] & 0x7] |
 				 (term->esc_args[0] & 0x8)) <<
@@ -4261,7 +4088,7 @@ static void term_out(Terminal *term)
 			break;
 		      case ANSI('G', '='):      /* set normal background */
 			compatibility(SCOANSI);
-			if (term->esc_args[0] < 16) {
+			if (term->esc_args[0] >= 0 && term->esc_args[0] < 16) {
 			    long colour =
  				(sco2ansicolour[term->esc_args[0] & 0x7] |
 				 (term->esc_args[0] & 0x8)) <<
@@ -4348,7 +4175,7 @@ static void term_out(Terminal *term)
 			 * Well we should do a soft reset at this point ...
 			 */
 			if (!has_compat(VT420) && has_compat(VT100)) {
-			    if (!term->no_remote_resize) {
+			    if (!term->cfg.no_remote_resize) {
 				if (term->reset_132)
 				    request_resize(132, 24);
 				else
@@ -4385,11 +4212,7 @@ static void term_out(Terminal *term)
 		  case '7':
 		  case '8':
 		  case '9':
-		    if (term->esc_args[0] <= UINT_MAX / 10 &&
-			term->esc_args[0] * 10 <= UINT_MAX - c - '0')
-			term->esc_args[0] = 10 * term->esc_args[0] + c - '0';
-		    else
-			term->esc_args[0] = UINT_MAX;
+		    term->esc_args[0] = 10 * term->esc_args[0] + c - '0';
 		    break;
 		  case 'L':
 		    /*
@@ -4471,11 +4294,7 @@ static void term_out(Terminal *term)
 		  case '7':
 		  case '8':
 		  case '9':
-		    if (term->esc_args[0] <= UINT_MAX / 10 &&
-			term->esc_args[0] * 10 <= UINT_MAX - c - '0')
-			term->esc_args[0] = 10 * term->esc_args[0] + c - '0';
-		    else
-			term->esc_args[0] = UINT_MAX;
+		    term->esc_args[0] = 10 * term->esc_args[0] + c - '0';
 		    break;
 		  default:
 		    term->termstate = OSC_STRING;
@@ -4556,8 +4375,7 @@ static void term_out(Terminal *term)
 		    break;
 		  case 'J':
 		    erase_lots(term, FALSE, FALSE, TRUE);
-                    if (term->scroll_on_disp)
-                        term->disptop = 0;
+		    term->disptop = 0;
 		    break;
 		  case 'K':
 		    erase_lots(term, TRUE, FALSE, TRUE);
@@ -4592,7 +4410,7 @@ static void term_out(Terminal *term)
 		     *     emulation.
 		     */
 		    term->vt52_mode = FALSE;
-		    term->blink_is_real = term->blinktext;
+		    term->blink_is_real = term->cfg.blinktext;
 		    term_schedule_tblink(term);
 		    break;
 #if 0
@@ -4612,8 +4430,7 @@ static void term_out(Terminal *term)
 		    /* compatibility(ATARI) */
 		    move(term, 0, 0, 0);
 		    erase_lots(term, FALSE, FALSE, TRUE);
-                    if (term->scroll_on_disp)
-                        term->disptop = 0;
+		    term->disptop = 0;
 		    break;
 		  case 'L':
 		    /* compatibility(ATARI) */
@@ -4636,8 +4453,7 @@ static void term_out(Terminal *term)
 		  case 'd':
 		    /* compatibility(ATARI) */
 		    erase_lots(term, FALSE, TRUE, FALSE);
-                    if (term->scroll_on_disp)
-                        term->disptop = 0;
+		    term->disptop = 0;
 		    break;
 		  case 'e':
 		    /* compatibility(ATARI) */
@@ -4738,7 +4554,7 @@ static void term_out(Terminal *term)
     }
 
     term_print_flush(term);
-    if (term->logflush && term->logctx)
+    if (term->cfg.logflush)
 	logflush(term->logctx);
 }
 
@@ -4841,7 +4657,7 @@ static termchar *term_bidi_line(Terminal *term, struct termline *ldata,
     int it;
 
     /* Do Arabic shaping and bidi. */
-    if(!term->bidi || !term->arabicshaping) {
+    if(!term->cfg.bidi || !term->cfg.arabicshaping) {
 
 	if (!term_bidi_cache_hit(term, scr_y, ldata->chars, term->cols)) {
 
@@ -4859,7 +4675,7 @@ static termchar *term_bidi_line(Terminal *term, struct termline *ldata,
 
 		switch (uc & CSET_MASK) {
 		  case CSET_LINEDRW:
-		    if (!term->rawcnp) {
+		    if (!term->cfg.rawcnp) {
 			uc = term->ucsdata->unitab_xterm[uc & 0xFF];
 			break;
 		    }
@@ -4880,19 +4696,19 @@ static termchar *term_bidi_line(Terminal *term, struct termline *ldata,
 		}
 
 		term->wcFrom[it].origwc = term->wcFrom[it].wc =
-		    (unsigned int)uc;
+		    (wchar_t)uc;
 		term->wcFrom[it].index = it;
 	    }
 
-	    if(!term->bidi)
+	    if(!term->cfg.bidi)
 		do_bidi(term->wcFrom, term->cols);
 
 	    /* this is saved iff done from inside the shaping */
-	    if(!term->bidi && term->arabicshaping)
+	    if(!term->cfg.bidi && term->cfg.arabicshaping)
 		for(it=0; it<term->cols; it++)
 		    term->wcTo[it] = term->wcFrom[it];
 
-	    if(!term->arabicshaping)
+	    if(!term->cfg.arabicshaping)
 		do_shape(term->wcFrom, term->wcTo, term->cols);
 
 	    if (term->ltemp_size < ldata->size) {
@@ -4951,14 +4767,15 @@ static void do_paint(Terminal *term, Context ctx, int may_optimise)
 	 * TODO: We should find out somehow that the stuff on screen has changed since last
 	 *       paint. How to do it?
 	 */
-	int urlhack_underline_always = (conf_get_int(term->conf, CONF_url_underline) == URLHACK_UNDERLINE_ALWAYS);
+	int urlhack_underline_always = (term->cfg.url_underline == URLHACK_UNDERLINE_ALWAYS);
 
 	int urlhack_underline =
-		conf_get_int(term->conf, CONF_url_underline) == URLHACK_UNDERLINE_ALWAYS ||
-		(conf_get_int(term->conf, CONF_url_underline) == URLHACK_UNDERLINE_HOVER && (!conf_get_int(term->conf, CONF_url_ctrl_click) || urlhack_is_ctrl_pressed())) ? 1 : 0;
+		term->cfg.url_underline == URLHACK_UNDERLINE_ALWAYS ||
+		(term->cfg.url_underline == URLHACK_UNDERLINE_HOVER && (!term->cfg.url_ctrl_click || urlhack_is_ctrl_pressed())) ? 1 : 0;
+
 	int urlhack_is_link = 0, urlhack_hover_current = 0;
 	int urlhack_toggle_x = term->cols, urlhack_toggle_y = term->rows;
-	unsigned int urlhack_region_index = 0;
+	int urlhack_region_index = 0;
 	text_region urlhack_region;
 
 	if (term->url_update) {
@@ -4997,14 +4814,14 @@ static void do_paint(Terminal *term, Context ctx, int may_optimise)
     /* Depends on:
      * screen array, disptop, scrtop,
      * selection, rv, 
-     * blinkpc, blink_is_real, tblinker, 
-     * curs.y, curs.x, cblinker, blink_cur, cursor_on, has_focus, wrapnext
+     * cfg.blinkpc, blink_is_real, tblinker, 
+     * curs.y, curs.x, cblinker, cfg.blink_cur, cursor_on, has_focus, wrapnext
      */
 
     /* Has the cursor position or type changed ? */
     if (term->cursor_on) {
 	if (term->has_focus) {
-	    if (term->cblinker || !term->blink_cur)
+	    if (term->cblinker || !term->cfg.blink_cur)
 		cursor = TATTR_ACTCURS;
 	    else
 		cursor = 0;
@@ -5112,11 +4929,11 @@ static void do_paint(Terminal *term, Context ctx, int may_optimise)
 	    tchar = d->chr;
 	    tattr = d->attr;
 
-            if (!term->ansi_colour)
+            if (!term->cfg.ansi_colour)
                 tattr = (tattr & ~(ATTR_FGMASK | ATTR_BGMASK)) | 
                 ATTR_DEFFG | ATTR_DEFBG;
 
-	    if (!term->xterm_256_colour) {
+	    if (!term->cfg.xterm_256_colour) {
 		int colour;
 		colour = (tattr & ATTR_FGMASK) >> ATTR_FGSHIFT;
 		if (colour >= 16 && colour < 256)
@@ -5287,13 +5104,11 @@ static void do_paint(Terminal *term, Context ctx, int may_optimise)
 
 	    break_run = ((tattr ^ attr) & term->attr_mask) != 0;
 
-#ifdef USES_VTLINE_HACK
 	    /* Special hack for VT100 Linedraw glyphs */
 	    if ((tchar >= 0x23BA && tchar <= 0x23BD) ||
                 (j > 0 && (newline[j-1].chr >= 0x23BA &&
                            newline[j-1].chr <= 0x23BD)))
 		break_run = TRUE;
-#endif
 
 	    /*
 	     * Separate out sequences of characters that have the
@@ -5341,17 +5156,10 @@ static void do_paint(Terminal *term, Context ctx, int may_optimise)
 		dirty_run = TRUE;
 	    }
 
-	    if (ccount+2 > chlen) {
+	    if (ccount >= chlen) {
 		chlen = ccount + 256;
 		ch = sresize(ch, chlen, wchar_t);
 	    }
-
-#ifdef PLATFORM_IS_UTF16
-	    if (tchar > 0x10000 && tchar < 0x110000) {
-		ch[ccount++] = (wchar_t) HIGH_SURROGATE_OF(tchar);
-		ch[ccount++] = (wchar_t) LOW_SURROGATE_OF(tchar);
-	    } else
-#endif /* PLATFORM_IS_UTF16 */
 	    ch[ccount++] = (wchar_t) tchar;
 
 	    if (d->cc_next) {
@@ -5375,17 +5183,10 @@ static void do_paint(Terminal *term, Context ctx, int may_optimise)
 			break;
 		    }
 
-		    if (ccount+2 > chlen) {
+		    if (ccount >= chlen) {
 			chlen = ccount + 256;
 			ch = sresize(ch, chlen, wchar_t);
 		    }
-
-#ifdef PLATFORM_IS_UTF16
-		    if (schar > 0x10000 && schar < 0x110000) {
-			ch[ccount++] = (wchar_t) HIGH_SURROGATE_OF(schar);
-			ch[ccount++] = (wchar_t) LOW_SURROGATE_OF(schar);
-		    } else
-#endif /* PLATFORM_IS_UTF16 */
 		    ch[ccount++] = (wchar_t) schar;
 		}
 
@@ -5547,7 +5348,7 @@ typedef struct {
 static void clip_addchar(clip_workbuf *b, wchar_t chr, int attr)
 {
     if (b->bufpos >= b->buflen) {
-	b->buflen *= 2;
+	b->buflen += 128;
 	b->textbuf = sresize(b->textbuf, b->buflen, wchar_t);
 	b->textptr = b->textbuf + b->bufpos;
 	b->attrbuf = sresize(b->attrbuf, b->buflen, int);
@@ -5558,8 +5359,7 @@ static void clip_addchar(clip_workbuf *b, wchar_t chr, int attr)
     b->bufpos++;
 }
 
-void clipme(Terminal *term, pos top, pos bottom, int rect, int desel,
-    void (*output)(Terminal *, void *, wchar_t *, int *, int, int))
+static void clipme(Terminal *term, pos top, pos bottom, int rect, int desel)
 {
     clip_workbuf buf;
     int old_top_x;
@@ -5637,7 +5437,7 @@ void clipme(Terminal *term, pos top, pos bottom, int rect, int desel,
 
 		switch (uc & CSET_MASK) {
 		  case CSET_LINEDRW:
-		    if (!term->rawcnp) {
+		    if (!term->cfg.rawcnp) {
 			uc = term->ucsdata->unitab_xterm[uc & 0xFF];
 			break;
 		    }
@@ -5717,7 +5517,7 @@ void clipme(Terminal *term, pos top, pos bottom, int rect, int desel,
     clip_addchar(&buf, 0, 0);
 #endif
     /* Finally, transfer all that to the clipboard. */
-    output(term, term->frontend, buf.textbuf, buf.attrbuf, buf.bufpos, desel);
+    write_clip(term->frontend, buf.textbuf, buf.attrbuf, buf.bufpos, desel);
     sfree(buf.textbuf);
     sfree(buf.attrbuf);
 }
@@ -5731,7 +5531,7 @@ void term_copyall(Terminal *term)
     top.x = 0;
     bottom.y = find_last_nonempty_line(term, screen);
     bottom.x = term->cols;
-    clipme(term, top, bottom, 0, TRUE, write_clip);
+    clipme(term, top, bottom, 0, TRUE);
 }
 
 /*
@@ -5891,8 +5691,7 @@ static pos sel_spread_half(Terminal *term, pos p, int dir)
 		    else
 			break;
 		} else {
-		    if (p.y+1 < term->rows && 
-                        (ldata->lattr & LATTR_WRAPPED)) {
+		    if (ldata->lattr & LATTR_WRAPPED) {
 			termline *ldata2;
 			ldata2 = lineptr(p.y+1);
 			if (wordtype(term, UCSGET(ldata2->chars, 0))
@@ -5963,33 +5762,6 @@ static void sel_spread(Terminal *term)
     }
 }
 
-static void term_paste_callback(void *vterm)
-{
-    Terminal *term = (Terminal *)vterm;
-
-    if (term->paste_len == 0)
-	return;
-
-    while (term->paste_pos < term->paste_len) {
-	int n = 0;
-	while (n + term->paste_pos < term->paste_len) {
-	    if (term->paste_buffer[term->paste_pos + n++] == '\015')
-		break;
-	}
-	if (term->ldisc)
-	    luni_send(term->ldisc, term->paste_buffer + term->paste_pos, n, 0);
-	term->paste_pos += n;
-
-	if (term->paste_pos < term->paste_len) {
-            queue_toplevel_callback(term_paste_callback, term);
-	    return;
-	}
-    }
-    sfree(term->paste_buffer);
-    term->paste_buffer = NULL;
-    term->paste_len = 0;
-}
-
 void term_do_paste(Terminal *term)
 {
     wchar_t *data;
@@ -6003,7 +5775,7 @@ void term_do_paste(Terminal *term)
 
         if (term->paste_buffer)
             sfree(term->paste_buffer);
-        term->paste_pos = term->paste_len = 0;
+        term->paste_pos = term->paste_hold = term->paste_len = 0;
         term->paste_buffer = snewn(len + 12, wchar_t);
 
         if (term->bracketed_paste) {
@@ -6046,19 +5818,10 @@ void term_do_paste(Terminal *term)
             if (term->paste_buffer)
                 sfree(term->paste_buffer);
             term->paste_buffer = 0;
-            term->paste_pos = term->paste_len = 0;
+            term->paste_pos = term->paste_hold = term->paste_len = 0;
         }
     }
     get_clip(term->frontend, NULL, NULL);
-
-    queue_toplevel_callback(term_paste_callback, term);
-}
-
-void urlhack_launch_url_helper(Terminal *term, void *frontend, wchar_t * data, int *attr, int len, int must_deselect) {
-    urlhack_launch_url(!conf_get_int(term->conf, CONF_url_defbrowser)
-        ? conf_get_filename(term->conf, CONF_url_browser)->path
-        : NULL,
-        data);
 }
 
 void term_mouse(Terminal *term, Mouse_Button braw, Mouse_Button bcooked,
@@ -6067,8 +5830,8 @@ void term_mouse(Terminal *term, Mouse_Button braw, Mouse_Button bcooked,
     pos selpoint;
     termline *ldata;
     int raw_mouse = (term->xterm_mouse &&
-		     !term->no_mouse_rep &&
-		     !(term->mouse_override && shift));
+		     !term->cfg.no_mouse_rep &&
+		     !(term->cfg.mouse_override && shift));
     int default_seltype;
 
     if (y < 0) {
@@ -6118,44 +5881,30 @@ void term_mouse(Terminal *term, Mouse_Button braw, Mouse_Button bcooked,
      */
     if (raw_mouse &&
 	(term->selstate != ABOUT_TO) && (term->selstate != DRAGGING)) {
-	int encstate = 0, r, c, wheel;
-	char abuf[32];
-	int len = 0;
+	int encstate = 0, r, c;
+	char abuf[16];
 
 	if (term->ldisc) {
 
 	    switch (braw) {
 	      case MBT_LEFT:
-		encstate = 0x00;	       /* left button down */
-                wheel = FALSE;
+		encstate = 0x20;	       /* left button down */
 		break;
 	      case MBT_MIDDLE:
-		encstate = 0x01;
-                wheel = FALSE;
+		encstate = 0x21;
 		break;
 	      case MBT_RIGHT:
-		encstate = 0x02;
-                wheel = FALSE;
+		encstate = 0x22;
 		break;
 	      case MBT_WHEEL_UP:
-		encstate = 0x40;
-                wheel = TRUE;
+		encstate = 0x60;
 		break;
 	      case MBT_WHEEL_DOWN:
-		encstate = 0x41;
-                wheel = TRUE;
+		encstate = 0x61;
 		break;
-	      default:
-                return;
+	      default: break;	       /* placate gcc warning about enum use */
 	    }
-            if (wheel) {
-                /* For mouse wheel buttons, we only ever expect to see
-                 * MA_CLICK actions, and we don't try to keep track of
-                 * the buttons being 'pressed' (since without matching
-                 * click/release pairs that's pointless). */
-                if (a != MA_CLICK)
-                    return;
-            } else switch (a) {
+	    switch (a) {
 	      case MA_DRAG:
 			if (term->xterm_mouse == 1) {// HACK: ADDED FOR hyperlink stuff
 				unlineptr(ldata); 
@@ -6164,40 +5913,27 @@ void term_mouse(Terminal *term, Mouse_Button braw, Mouse_Button bcooked,
 		encstate += 0x20;
 		break;
 	      case MA_RELEASE:
-		/* If multiple extensions are enabled, the xterm 1006 is used, so it's okay to check for only that */
-		if (!term->xterm_extended_mouse)
-		    encstate = 0x03;
+		encstate = 0x23;
 		term->mouse_is_down = 0;
 		break;
 	      case MA_CLICK:
-        // HACK: ADDED FOR hyperlink stuff
-        // MORE HACKING (@unphased: allow sequences of mouse wheel up and mouse wheel down to pass through)
-			  if (term->mouse_is_down == braw && braw != MBT_WHEEL_UP && braw != MBT_WHEEL_DOWN) {
+			  if (term->mouse_is_down == braw) {// HACK: ADDED FOR hyperlink stuff
 				  unlineptr(ldata); 
 				  return;
 			  }
 		term->mouse_is_down = braw;
 		break;
-              default:
-                return;
+	      default: break;	       /* placate gcc warning about enum use */
 	    }
 	    if (shift)
 		encstate += 0x04;
 	    if (ctrl)
 		encstate += 0x10;
-	    r = y + 1;
-	    c = x + 1;
+	    r = y + 33;
+	    c = x + 33;
 
-	    /* Check the extensions in decreasing order of preference. Encoding the release event above assumes that 1006 comes first. */
-	    if (term->xterm_extended_mouse) {
-		len = sprintf(abuf, "\033[<%d;%d;%d%c", encstate, c, r, a == MA_RELEASE ? 'm' : 'M');
-	    } else if (term->urxvt_extended_mouse) {
-		len = sprintf(abuf, "\033[%d;%d;%dM", encstate + 32, c, r);
-	    } else if (c <= 223 && r <= 223) {
-		len = sprintf(abuf, "\033[M%c%c%c", encstate + 32, c + 32, r + 32);
-	    }
-            if (len > 0)
-                ldisc_send(term->ldisc, abuf, len, 0);
+	    sprintf(abuf, "\033[M%c%c%c", encstate, c, r);
+	    ldisc_send(term->ldisc, abuf, 6, 0);
 	}
 	unlineptr(ldata); // HACK: ADDED FOR hyperlink stuff
 	return;
@@ -6207,7 +5943,7 @@ void term_mouse(Terminal *term, Mouse_Button braw, Mouse_Button bcooked,
      * Set the selection type (rectangular or normal) at the start
      * of a selection attempt, from the state of Alt.
      */
-    if (!alt ^ !term->rect_select)
+    if (!alt ^ !term->cfg.rect_select)
 	default_seltype = RECTANGULAR;
     else
 	default_seltype = LEXICOGRAPHIC;
@@ -6233,17 +5969,48 @@ void term_mouse(Terminal *term, Mouse_Button braw, Mouse_Button bcooked,
 	deselect(term);
 	term->selstate = NO_SELECTION;
 
+	if ((!term->cfg.url_ctrl_click || (term->cfg.url_ctrl_click && urlhack_is_ctrl_pressed())) && urlhack_is_in_link_region(x, y)) {
+		int i;
+		char *linkbuf = NULL;
+		text_region region = urlhack_get_link_bounds(x, y);
 
-	if ((!conf_get_int(term->conf, CONF_url_ctrl_click) || (conf_get_int(term->conf, CONF_url_ctrl_click) && urlhack_is_ctrl_pressed())) && urlhack_is_in_link_region(x, y)) {
-            wchar_t *linkbuf = NULL;
-            text_region region = urlhack_get_link_bounds(x, y);
-            pos top, bottom;
-            top.x = region.x0;
-            top.y = region.y0 + term->disptop;
-            bottom.x = region.x1;
-            bottom.y = region.y1 + term->disptop;
-            clipme(term, top, bottom, 0, 0, urlhack_launch_url_helper);
-	    sfree(linkbuf);
+		if (region.y0 == region.y1) {
+			linkbuf = snewn(region.x1 - region.x0 + 2, char);
+			
+			for (i = region.x0; i < region.x1; i++) {
+				linkbuf[i - region.x0] = (char)(ldata->chars[i].chr);
+			}
+
+			linkbuf[i - region.x0] = '\0';
+		}
+		else {
+			termline *urldata = scrlineptr(region.y0);
+			int linklen, row = region.y0;
+
+			linklen = (term->cols - region.x0) +
+				((region.y1 - region.y0 - 1) * term->cols) + region.x1 + 1;
+
+			linkbuf = snewn(linklen, char);
+
+			for (i = region.x0; i < linklen + region.x0; i++) {
+				linkbuf[i - region.x0] = (char)(urldata->chars[i % term->cols].chr);
+				
+				// Jump to next line?
+				if (((i + 1) % term->cols) == 0) {
+					row++;
+					if (row >= term->rows)
+						break;
+					urldata = lineptr(row);
+				}
+			}
+
+			linkbuf[linklen - 1] = '\0';
+			unlineptr(urldata);
+		}
+		
+		urlhack_launch_url(!term->cfg.url_defbrowser ? term->cfg.url_browser : NULL, linkbuf);
+		
+		sfree(linkbuf);
 	}
 	/* HACK: PuttyTray / Nutty : END */
 
@@ -6261,22 +6028,6 @@ void term_mouse(Terminal *term, Mouse_Button braw, Mouse_Button bcooked,
 		unlineptr(ldata);
 		return;
 	}
-
-        if (a == MA_DRAG &&
-            (term->selstate == NO_SELECTION || term->selstate == SELECTED)) {
-            /*
-             * This can happen if a front end has passed us a MA_DRAG
-             * without a prior MA_CLICK. OS X GTK does so, for
-             * example, if the initial button press was eaten by the
-             * WM when it activated the window in the first place. The
-             * nicest thing to do in this situation is to ignore
-             * further drags, and wait for the user to click in the
-             * window again properly if they want to select.
-             */
-            return;
-        }
-	if (term->selstate == ABOUT_TO && poseq(term->selanchor, selpoint))
-	    return;
 	if (bcooked == MBT_EXTEND && a != MA_DRAG &&
 	    term->selstate == SELECTED) {
 	    if (term->seltype == LEXICOGRAPHIC) {
@@ -6347,7 +6098,7 @@ void term_mouse(Terminal *term, Mouse_Button braw, Mouse_Button bcooked,
 	     * data to the clipboard.
 	     */
 	    clipme(term, term->selstart, term->selend,
-		   (term->seltype == RECTANGULAR), FALSE, write_clip);
+		   (term->seltype == RECTANGULAR), FALSE);
 	    term->selstate = SELECTED;
 	} else
 	    term->selstate = NO_SELECTION;
@@ -6360,13 +6111,6 @@ void term_mouse(Terminal *term, Mouse_Button braw, Mouse_Button bcooked,
 	request_paste(term->frontend);
     }
 
-    /*
-     * Since terminal output is suppressed during drag-selects, we
-     * should make sure to write any pending output if one has just
-     * finished.
-     */
-    if (term->selstate != DRAGGING)
-        term_out(term);
     term_update(term);
 }
 
@@ -6377,7 +6121,7 @@ int format_arrow_key(char *buf, Terminal *term, int xkey, int ctrl)
     if (term->vt52_mode)
 	p += sprintf((char *) p, "\x1B%c", xkey);
     else {
-	int app_flg = (term->app_cursor_keys && !term->no_applic_c);
+	int app_flg = (term->app_cursor_keys && !term->cfg.no_applic_c);
 #if 0
 	/*
 	 * RDB: VT100 & VT102 manuals both state the app cursor
@@ -6404,6 +6148,433 @@ int format_arrow_key(char *buf, Terminal *term, int xkey, int ctrl)
     }
 
     return p - buf;
+}
+
+void term_key(Terminal *term, Key_Sym keysym, wchar_t *text, size_t tlen,
+	      unsigned int modifiers, unsigned int flags)
+{
+    char output[10];
+    char *p = output;
+    int prependesc = FALSE;
+#if 0
+    int i;
+
+    fprintf(stderr, "keysym = %d, %d chars:", keysym, tlen);
+    for (i = 0; i < tlen; i++)
+	fprintf(stderr, " %04x", (unsigned)text[i]);
+    fprintf(stderr, "\n");
+#endif
+
+    /* XXX Num Lock */
+    if ((flags & PKF_REPEAT) && term->repeat_off)
+	return;
+
+    /* Currently, Meta always just prefixes everything with ESC. */
+    if (modifiers & PKM_META)
+	prependesc = TRUE;
+    modifiers &= ~PKM_META;
+
+    /*
+     * Alt is only used for Alt+keypad, which isn't supported yet, so
+     * ignore it.
+     */
+    modifiers &= ~PKM_ALT;
+
+    /* Standard local function keys */
+    switch (modifiers & (PKM_SHIFT | PKM_CONTROL)) {
+      case PKM_SHIFT:
+	if (keysym == PK_PAGEUP)
+	    /* scroll up one page */;
+	if (keysym == PK_PAGEDOWN)
+	    /* scroll down on page */;
+	if (keysym == PK_INSERT)
+	    term_do_paste(term);
+	break;
+      case PKM_CONTROL:
+	if (keysym == PK_PAGEUP)
+	    /* scroll up one line */;
+	if (keysym == PK_PAGEDOWN)
+	    /* scroll down one line */;
+	/* Control-Numlock for app-keypad mode switch */
+	if (keysym == PK_PF1)
+	    term->app_keypad_keys ^= 1;
+	break;
+    }
+
+    if (modifiers & PKM_ALT) {
+	/* Alt+F4 (close) */
+	/* Alt+Return (full screen) */
+	/* Alt+Space (system menu) */
+    }
+
+    if (keysym == PK_NULL && (modifiers & PKM_CONTROL) && tlen == 1 &&
+	text[0] >= 0x20 && text[0] <= 0x7e) {
+	/* ASCII chars + Control */
+	if ((text[0] >= 0x40 && text[0] <= 0x5f) ||
+	    (text[0] >= 0x61 && text[0] <= 0x7a))
+	    text[0] &= 0x1f;
+	else {
+	    /*
+	     * Control-2 should return ^@ (0x00), Control-6 should return
+	     * ^^ (0x1E), and Control-Minus should return ^_ (0x1F). Since
+	     * the DOS keyboard handling did it, and we have nothing better
+	     * to do with the key combo in question, we'll also map
+	     * Control-Backquote to ^\ (0x1C).
+	     */
+	    switch (text[0]) {
+	      case ' ': text[0] = 0x00; break;
+	      case '-': text[0] = 0x1f; break;
+	      case '/': text[0] = 0x1f; break;
+	      case '2': text[0] = 0x00; break;
+	      case '3': text[0] = 0x1b; break;
+	      case '4': text[0] = 0x1c; break;
+	      case '5': text[0] = 0x1d; break;
+	      case '6': text[0] = 0x1e; break;
+	      case '7': text[0] = 0x1f; break;
+	      case '8': text[0] = 0x7f; break;
+	      case '`': text[0] = 0x1c; break;
+	    }
+	}
+    }
+
+    /* Nethack keypad */
+    if (term->cfg.nethack_keypad) {
+	char c = 0;
+	switch (keysym) {
+	  case PK_KP1: c = 'b'; break;
+	  case PK_KP2: c = 'j'; break;
+	  case PK_KP3: c = 'n'; break;
+	  case PK_KP4: c = 'h'; break;
+	  case PK_KP5: c = '.'; break;
+	  case PK_KP6: c = 'l'; break;
+	  case PK_KP7: c = 'y'; break;
+	  case PK_KP8: c = 'k'; break;
+	  case PK_KP9: c = 'u'; break;
+	  default: break; /* else gcc warns `enum value not used' */
+	}
+	if (c != 0) {
+	    if (c != '.') {
+		if (modifiers & PKM_CONTROL)
+		    c &= 0x1f;
+		else if (modifiers & PKM_SHIFT)
+			c = toupper((unsigned char)c);
+	    }
+	    *p++ = c;
+	    goto done;
+	}
+    }
+
+    /* Numeric Keypad */
+    if (PK_ISKEYPAD(keysym)) {
+	int xkey = 0;
+
+	/*
+	 * In VT400 mode, PFn always emits an escape sequence.  In
+	 * Linux and tilde modes, this only happens in app keypad mode.
+	 */
+	if (term->cfg.funky_type == FUNKY_VT400 ||
+	    ((term->cfg.funky_type == FUNKY_LINUX ||
+	      term->cfg.funky_type == FUNKY_TILDE) &&
+	     term->app_keypad_keys && !term->cfg.no_applic_k)) {
+	    switch (keysym) {
+	      case PK_PF1: xkey = 'P'; break;
+	      case PK_PF2: xkey = 'Q'; break;
+	      case PK_PF3: xkey = 'R'; break;
+	      case PK_PF4: xkey = 'S'; break;
+	      default: break; /* else gcc warns `enum value not used' */
+	    }
+	}
+	if (term->app_keypad_keys && !term->cfg.no_applic_k) {
+	    switch (keysym) {
+	      case PK_KP0: xkey = 'p'; break;
+	      case PK_KP1: xkey = 'q'; break;
+	      case PK_KP2: xkey = 'r'; break;
+	      case PK_KP3: xkey = 's'; break;
+	      case PK_KP4: xkey = 't'; break;
+	      case PK_KP5: xkey = 'u'; break;
+	      case PK_KP6: xkey = 'v'; break;
+	      case PK_KP7: xkey = 'w'; break;
+	      case PK_KP8: xkey = 'x'; break;
+	      case PK_KP9: xkey = 'y'; break;
+	      case PK_KPDECIMAL: xkey = 'n'; break;
+	      case PK_KPENTER: xkey = 'M'; break;
+	      default: break; /* else gcc warns `enum value not used' */
+	    }
+	    if (term->cfg.funky_type == FUNKY_XTERM && tlen > 0) {
+		/*
+		 * xterm can't see the layout of the keypad, so it has
+		 * to rely on the X keysyms returned by the keys.
+		 * Hence, we look at the strings here, not the PuTTY
+		 * keysyms (which describe the layout).
+		 */
+		switch (text[0]) {
+		  case '+':
+		    if (modifiers & PKM_SHIFT)
+			xkey = 'l';
+		    else
+			xkey = 'k';
+		    break;
+		  case '/': xkey = 'o'; break;
+		  case '*': xkey = 'j'; break;
+		  case '-': xkey = 'm'; break;
+		}
+	    } else {
+		/*
+		 * In all other modes, we try to retain the layout of
+		 * the DEC keypad in application mode.
+		 */
+		switch (keysym) {
+		  case PK_KPBIGPLUS:
+		    /* This key covers the '-' and ',' keys on a VT220 */
+		    if (modifiers & PKM_SHIFT)
+			xkey = 'm'; /* VT220 '-' */
+		    else
+			xkey = 'l'; /* VT220 ',' */
+		    break;
+		  case PK_KPMINUS: xkey = 'm'; break;
+		  case PK_KPCOMMA: xkey = 'l'; break;
+		  default: break; /* else gcc warns `enum value not used' */
+		}
+	    }
+	}
+	if (xkey) {
+	    if (term->vt52_mode) {
+		if (xkey >= 'P' && xkey <= 'S')
+		    p += sprintf((char *) p, "\x1B%c", xkey);
+		else
+		    p += sprintf((char *) p, "\x1B?%c", xkey);
+	    } else
+		p += sprintf((char *) p, "\x1BO%c", xkey);
+	    goto done;
+	}
+	/* Not in application mode -- treat the number pad as arrow keys? */
+	if ((flags & PKF_NUMLOCK) == 0) {
+	    switch (keysym) {
+	      case PK_KP0: keysym = PK_INSERT; break;
+	      case PK_KP1: keysym = PK_END; break;
+	      case PK_KP2: keysym = PK_DOWN; break;
+	      case PK_KP3: keysym = PK_PAGEDOWN; break;
+	      case PK_KP4: keysym = PK_LEFT; break;
+	      case PK_KP5: keysym = PK_REST; break;
+	      case PK_KP6: keysym = PK_RIGHT; break;
+	      case PK_KP7: keysym = PK_HOME; break;
+	      case PK_KP8: keysym = PK_UP; break;
+	      case PK_KP9: keysym = PK_PAGEUP; break;
+	      default: break; /* else gcc warns `enum value not used' */
+	    }
+	}
+    }
+
+    /* Miscellaneous keys */
+    switch (keysym) {
+      case PK_ESCAPE:
+	*p++ = 0x1b;
+	goto done;
+      case PK_BACKSPACE:
+	    if (modifiers == 0)
+		*p++ = (term->cfg.bksp_is_delete ? 0x7F : 0x08);
+	    else if (modifiers == PKM_SHIFT)
+		/* We do the opposite of what is configured */
+		*p++ = (term->cfg.bksp_is_delete ? 0x08 : 0x7F);
+	    else break;
+	    goto done;
+      case PK_TAB:
+	if (modifiers == 0)
+	    *p++ = 0x09;
+	else if (modifiers == PKM_SHIFT)
+	    *p++ = 0x1B, *p++ = '[', *p++ = 'Z';
+	else break;
+	goto done;
+	/* XXX window.c has ctrl+shift+space sending 0xa0 */
+      case PK_PAUSE:
+	if (modifiers == PKM_CONTROL)
+	    *p++ = 26;
+	else break;
+	goto done;
+      case PK_RETURN:
+      case PK_KPENTER: /* Odd keypad modes handled above */
+	if (modifiers == 0) {
+	    *p++ = 0x0d;
+	    if (term->cr_lf_return)
+		*p++ = 0x0a;
+	    goto done;
+	}
+      default: break; /* else gcc warns `enum value not used' */
+    }
+
+    /* SCO function keys and editing keys */
+    if (term->cfg.funky_type == FUNKY_SCO) {
+	if (PK_ISFKEY(keysym) && keysym <= PK_F12) {
+	    static char const codes[] =
+		"MNOPQRSTUVWX" "YZabcdefghij" "klmnopqrstuv" "wxyz@[\\]^_`{";
+	    int index = keysym - PK_F1;
+
+	    if (modifiers & PKM_SHIFT) index += 12;
+	    if (modifiers & PKM_CONTROL) index += 24;
+	    p += sprintf((char *) p, "\x1B[%c", codes[index]);
+	    goto done;
+	}
+	if (PK_ISEDITING(keysym)) {
+	    int xkey = 0;
+
+	    switch (keysym) {
+	      case PK_DELETE:   *p++ = 0x7f; goto done;
+	      case PK_HOME:     xkey = 'H'; break;
+	      case PK_INSERT:   xkey = 'L'; break;
+	      case PK_END:      xkey = 'F'; break;
+	      case PK_PAGEUP:   xkey = 'I'; break;
+	      case PK_PAGEDOWN: xkey = 'G'; break;
+	      default: break; /* else gcc warns `enum value not used' */
+	    }
+	    p += sprintf((char *) p, "\x1B[%c", xkey);
+	}
+    }
+
+    if (PK_ISEDITING(keysym) && (modifiers & PKM_SHIFT) == 0) {
+	int code;
+
+	if (term->cfg.funky_type == FUNKY_XTERM) {
+	    /* Xterm shuffles these keys, apparently. */
+	    switch (keysym) {
+	      case PK_HOME:     keysym = PK_INSERT;   break;
+	      case PK_INSERT:   keysym = PK_HOME;     break;
+	      case PK_DELETE:   keysym = PK_END;      break;
+	      case PK_END:      keysym = PK_PAGEUP;   break;
+	      case PK_PAGEUP:   keysym = PK_DELETE;   break;
+	      case PK_PAGEDOWN: keysym = PK_PAGEDOWN; break;
+	      default: break; /* else gcc warns `enum value not used' */
+	    }
+	}
+
+	/* RXVT Home/End */
+	if (term->cfg.rxvt_homeend &&
+	    (keysym == PK_HOME || keysym == PK_END)) {
+	    p += sprintf((char *) p, keysym == PK_HOME ? "\x1B[H" : "\x1BOw");
+	    goto done;
+	}
+
+	if (term->vt52_mode) {
+	    int xkey;
+
+	    /*
+	     * A real VT52 doesn't have these, and a VT220 doesn't
+	     * send anything for them in VT52 mode.
+	     */
+	    switch (keysym) {
+	      case PK_HOME:     xkey = 'H'; break;
+	      case PK_INSERT:   xkey = 'L'; break;
+	      case PK_DELETE:   xkey = 'M'; break;
+	      case PK_END:      xkey = 'E'; break;
+	      case PK_PAGEUP:   xkey = 'I'; break;
+	      case PK_PAGEDOWN: xkey = 'G'; break;
+	      default: xkey=0; break; /* else gcc warns `enum value not used'*/
+	    }
+	    p += sprintf((char *) p, "\x1B%c", xkey);
+	    goto done;
+	}
+
+	switch (keysym) {
+	  case PK_HOME:     code = 1; break;
+	  case PK_INSERT:   code = 2; break;
+	  case PK_DELETE:   code = 3; break;
+	  case PK_END:      code = 4; break;
+	  case PK_PAGEUP:   code = 5; break;
+	  case PK_PAGEDOWN: code = 6; break;
+	  default: code = 0; break; /* else gcc warns `enum value not used' */
+	}
+	p += sprintf((char *) p, "\x1B[%d~", code);
+	goto done;
+    }
+
+    if (PK_ISFKEY(keysym)) {
+	/* Map Shift+F1-F10 to F11-F20 */
+	if (keysym >= PK_F1 && keysym <= PK_F10 && (modifiers & PKM_SHIFT))
+	    keysym += 10;
+	if ((term->vt52_mode || term->cfg.funky_type == FUNKY_VT100P) &&
+	    keysym <= PK_F14) {
+	    /* XXX This overrides the XTERM/VT52 mode below */
+	    int offt = 0;
+	    if (keysym >= PK_F6)  offt++;
+	    if (keysym >= PK_F12) offt++;
+	    p += sprintf((char *) p, term->vt52_mode ? "\x1B%c" : "\x1BO%c",
+			 'P' + keysym - PK_F1 - offt);
+	    goto done;
+	}
+	if (term->cfg.funky_type == FUNKY_LINUX && keysym <= PK_F5) {
+	    p += sprintf((char *) p, "\x1B[[%c", 'A' + keysym - PK_F1);
+	    goto done;
+	}
+	if (term->cfg.funky_type == FUNKY_XTERM && keysym <= PK_F4) {
+	    if (term->vt52_mode)
+		p += sprintf((char *) p, "\x1B%c", 'P' + keysym - PK_F1);
+	    else
+		p += sprintf((char *) p, "\x1BO%c", 'P' + keysym - PK_F1);
+	    goto done;
+	}
+	p += sprintf((char *) p, "\x1B[%d~", 11 + keysym - PK_F1);
+	goto done;
+    }
+
+    if (PK_ISCURSOR(keysym)) {
+	int xkey;
+
+	switch (keysym) {
+	  case PK_UP:    xkey = 'A'; break;
+	  case PK_DOWN:  xkey = 'B'; break;
+	  case PK_RIGHT: xkey = 'C'; break;
+	  case PK_LEFT:  xkey = 'D'; break;
+	  case PK_REST:  xkey = 'G'; break; /* centre key on number pad */
+	  default: xkey = 0; break; /* else gcc warns `enum value not used' */
+	}
+	p += format_arrow_key(p, term, xkey, modifiers == PKM_CONTROL);
+	goto done;
+    }
+
+  done:
+    if (p > output || tlen > 0) {
+	/*
+	 * Interrupt an ongoing paste. I'm not sure
+	 * this is sensible, but for the moment it's
+	 * preferable to having to faff about buffering
+	 * things.
+	 */
+	term_nopaste(term);
+
+	/*
+	 * We need not bother about stdin backlogs
+	 * here, because in GUI PuTTY we can't do
+	 * anything about it anyway; there's no means
+	 * of asking Windows to hold off on KEYDOWN
+	 * messages. We _have_ to buffer everything
+	 * we're sent.
+	 */
+	term_seen_key_event(term);
+
+	if (prependesc) {
+#if 0
+	    fprintf(stderr, "sending ESC\n");
+#endif
+	    ldisc_send(term->ldisc, "\x1b", 1, 1);
+	}
+
+	if (p > output) {
+#if 0
+	    fprintf(stderr, "sending %d bytes:", p - output);
+	    for (i = 0; i < p - output; i++)
+		fprintf(stderr, " %02x", output[i]);
+	    fprintf(stderr, "\n");
+#endif
+	    ldisc_send(term->ldisc, output, p - output, 1);
+	} else if (tlen > 0) {
+#if 0
+	    fprintf(stderr, "sending %d unichars:", tlen);
+	    for (i = 0; i < tlen; i++)
+		fprintf(stderr, " %04x", (unsigned) text[i]);
+	    fprintf(stderr, "\n");
+#endif
+	    luni_send(term->ldisc, text, tlen, 1);
+	}
+    }
 }
 
 void term_nopaste(Terminal *term)
@@ -6439,13 +6610,9 @@ void term_paste(Terminal *term)
     while (term->paste_pos < term->paste_len) {
 	int n = 0;
 	while (n + term->paste_pos < term->paste_len) {
-            if (term->paste_buffer[term->paste_pos + n++] == '\015') {
-                if (term->pastedelay > 0) {
-                    Sleep(term->pastedelay);
-		}
-                break;
-	    }
-        }
+	    if (term->paste_buffer[term->paste_pos + n++] == '\015')
+		break;
+	}
 	if (term->ldisc)
 	    luni_send(term->ldisc, term->paste_buffer + term->paste_pos, n, 0);
 	term->paste_pos += n;
@@ -6470,14 +6637,6 @@ void term_deselect(Terminal *term)
 {
     deselect(term);
     term_update(term);
-
-    /*
-     * Since terminal output is suppressed during drag-selects, we
-     * should make sure to write any pending output if one has just
-     * finished.
-     */
-    if (term->selstate != DRAGGING)
-        term_out(term);
 }
 
 int term_ldisc(Terminal *term, int option)
@@ -6568,13 +6727,11 @@ void term_set_focus(Terminal *term, int has_focus)
  */
 char *term_get_ttymode(Terminal *term, const char *mode)
 {
-    const char *val = NULL;
+    char *val = NULL;
     if (strcmp(mode, "ERASE") == 0) {
-	val = term->bksp_is_delete ? "^?" : "^H";
-    } else if (strcmp(mode, "IUTF8") == 0) {
-	val = frontend_is_utf8(term->frontend) ? "yes" : "no";
+	val = term->cfg.bksp_is_delete ? "^?" : "^H";
     }
-    /* FIXME: perhaps we should set ONLCR based on lfhascr as well? */
+    /* FIXME: perhaps we should set ONLCR based on cfg.lfhascr as well? */
     /* FIXME: or ECHO and friends based on local echo state? */
     return dupstr(val);
 }
@@ -6590,7 +6747,7 @@ struct term_userpass_state {
  * input.
  */
 int term_get_userpass_input(Terminal *term, prompts_t *p,
-			    const unsigned char *in, int inlen)
+			    unsigned char *in, int inlen)
 {
     struct term_userpass_state *s = (struct term_userpass_state *)p->data;
     if (!s) {
@@ -6620,7 +6777,7 @@ int term_get_userpass_input(Terminal *term, prompts_t *p,
 	{
 	    int i;
 	    for (i = 0; i < (int)p->n_prompts; i++)
-                prompt_set_result(p->prompts[i], "");
+		memset(p->prompts[i]->result, 0, p->prompts[i]->result_len);
 	}
     }
 
@@ -6647,8 +6804,8 @@ int term_get_userpass_input(Terminal *term, prompts_t *p,
 	      case 10:
 	      case 13:
 		term_data(term, 0, "\r\n", 2);
-                prompt_ensure_result_size(pr, s->pos + 1);
 		pr->result[s->pos] = '\0';
+		pr->result[pr->result_len - 1] = '\0';
 		/* go to next prompt, if any */
 		s->curr_prompt++;
 		s->done_prompt = 0;
@@ -6683,9 +6840,10 @@ int term_get_userpass_input(Terminal *term, prompts_t *p,
 		 * when we're doing password input, because some people
 		 * have control characters in their passwords.
 		 */
-		if (!pr->echo || (c >= ' ' && c <= '~') ||
-		     ((unsigned char) c >= 160)) {
-                    prompt_ensure_result_size(pr, s->pos + 1);
+		if ((!pr->echo ||
+		     (c >= ' ' && c <= '~') ||
+		     ((unsigned char) c >= 160))
+		    && s->pos < pr->result_len - 1) {
 		    pr->result[s->pos++] = c;
 		    if (pr->echo)
 			term_data(term, 0, &c, 1);

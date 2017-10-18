@@ -2,8 +2,6 @@
  * RSA key generation.
  */
 
-#include <assert.h>
-
 #include "ssh.h"
 
 #define RSA_EXPONENT 37		       /* we like this prime */
@@ -12,7 +10,6 @@ int rsa_generate(struct RSAKey *key, int bits, progfn_t pfn,
 		 void *pfnparam)
 {
     Bignum pm1, qm1, phi_n;
-    unsigned pfirst, qfirst;
 
     /*
      * Set up the phase limits for the progress report. We do this
@@ -62,11 +59,10 @@ int rsa_generate(struct RSAKey *key, int bits, progfn_t pfn,
      * general that's slightly more fiddly to arrange. By choosing
      * a prime e, we can simplify the criterion.)
      */
-    invent_firstbits(&pfirst, &qfirst);
     key->p = primegen(bits / 2, RSA_EXPONENT, 1, NULL,
-		      1, pfn, pfnparam, pfirst);
+		      1, pfn, pfnparam);
     key->q = primegen(bits - bits / 2, RSA_EXPONENT, 1, NULL,
-		      2, pfn, pfnparam, qfirst);
+		      2, pfn, pfnparam);
 
     /*
      * Ensure p > q, by swapping them if not.
@@ -94,10 +90,8 @@ int rsa_generate(struct RSAKey *key, int bits, progfn_t pfn,
     freebn(pm1);
     freebn(qm1);
     key->private_exponent = modinv(key->exponent, phi_n);
-    assert(key->private_exponent);
     pfn(pfnparam, PROGFN_PROGRESS, 3, 4);
     key->iqmp = modinv(key->q, key->p);
-    assert(key->iqmp);
     pfn(pfnparam, PROGFN_PROGRESS, 3, 5);
 
     /*

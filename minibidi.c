@@ -1,4 +1,5 @@
 /************************************************************************
+ * $Id$
  *
  * ------------
  * Description:
@@ -9,6 +10,13 @@
  *   http://www.unicode.org/reports/tr9/
  *
  * Author: Ahmad Khalifa
+ *
+ * -----------------
+ * Revision Details:    (Updated by Revision Control System)
+ * -----------------
+ *  $Date$
+ *  $Author$
+ *  $Revision$
  *
  * (www.arabeyes.org - under MIT license)
  *
@@ -50,7 +58,7 @@ shapetypes[(xh)-SHAPE_FIRST].type : SU) /*))*/
 #define leastGreaterEven(x) ( ((x)+2) &~ 1 )
 
 typedef struct bidi_char {
-    unsigned int origwc, wc;
+    wchar_t origwc, wc;
     unsigned short index;
 } bidi_char;
 
@@ -62,7 +70,7 @@ unsigned char setOverrideBits(unsigned char level, unsigned char override);
 int getPreviousLevel(unsigned char* level, int from);
 int do_shape(bidi_char *line, bidi_char *to, int count);
 int do_bidi(bidi_char *line, int count);
-void doMirror(unsigned int *ch);
+void doMirror(wchar_t* ch);
 
 /* character types */
 enum {
@@ -1628,7 +1636,7 @@ int do_bidi(bidi_char *line, int count)
  * takes a pointer to a character that is checked for
  * having a mirror glyph.
  */
-void doMirror(unsigned int *ch)
+void doMirror(wchar_t* ch)
 {
     if ((*ch & 0xFF00) == 0) {
 	switch (*ch) {

@@ -7,22 +7,21 @@
 
 #include <stdio.h>
 #include <ctype.h>
-#include <assert.h>
 
 #include "putty.h"
 #include "terminal.h"
 #include "ldisc.h"
 
-#define ECHOING (ldisc->localecho == FORCE_ON || \
-                 (ldisc->localecho == AUTO && \
+#define ECHOING (ldisc->cfg->localecho == FORCE_ON || \
+                 (ldisc->cfg->localecho == AUTO && \
                       (ldisc->back->ldisc(ldisc->backhandle, LD_ECHO) || \
 			   term_ldisc(ldisc->term, LD_ECHO))))
-#define EDITING (ldisc->localedit == FORCE_ON || \
-                 (ldisc->localedit == AUTO && \
+#define EDITING (ldisc->cfg->localedit == FORCE_ON || \
+                 (ldisc->cfg->localedit == AUTO && \
                       (ldisc->back->ldisc(ldisc->backhandle, LD_EDIT) || \
 			   term_ldisc(ldisc->term, LD_EDIT))))
 
-static void c_write(Ldisc ldisc, const char *buf, int len)
+static void c_write(Ldisc ldisc, char *buf, int len)
 {
     from_backend(ldisc->frontend, 0, buf, len);
 }
@@ -77,7 +76,7 @@ static void bsb(Ldisc ldisc, int n)
 #define CTRL(x) (x^'@')
 #define KCTRL(x) ((x^'@') | 0x100)
 
-void *ldisc_create(Conf *conf, Terminal *term,
+void *ldisc_create(Config *mycfg, Terminal *term,
 		   Backend *back, void *backhandle,
 		   void *frontend)
 {
@@ -88,12 +87,11 @@ void *ldisc_create(Conf *conf, Terminal *term,
     ldisc->bufsiz = 0;
     ldisc->quotenext = 0;
 
+    ldisc->cfg = mycfg;
     ldisc->back = back;
     ldisc->backhandle = backhandle;
     ldisc->term = term;
     ldisc->frontend = frontend;
-
-    ldisc_configure(ldisc, conf);
 
     /* Link ourselves into the backend and the terminal */
     if (term)
@@ -102,17 +100,6 @@ void *ldisc_create(Conf *conf, Terminal *term,
 	back->provide_ldisc(backhandle, ldisc);
 
     return ldisc;
-}
-
-void ldisc_configure(void *handle, Conf *conf)
-{
-    Ldisc ldisc = (Ldisc) handle;
-
-    ldisc->telnet_keyboard = conf_get_int(conf, CONF_telnet_keyboard);
-    ldisc->telnet_newline = conf_get_int(conf, CONF_telnet_newline);
-    ldisc->protocol = conf_get_int(conf, CONF_protocol);
-    ldisc->localecho = conf_get_int(conf, CONF_localecho);
-    ldisc->localedit = conf_get_int(conf, CONF_localedit);
 }
 
 void ldisc_free(void *handle)
@@ -128,38 +115,24 @@ void ldisc_free(void *handle)
     sfree(ldisc);
 }
 
-void ldisc_echoedit_update(void *handle)
-{
-    Ldisc ldisc = (Ldisc) handle;
-    frontend_echoedit_update(ldisc->frontend, ECHOING, EDITING);
-}
-
-void ldisc_send(void *handle, const char *buf, int len, int interactive)
+void ldisc_send(void *handle, char *buf, int len, int interactive)
 {
     Ldisc ldisc = (Ldisc) handle;
     int keyflag = 0;
-
-    assert(ldisc->term);
-    assert(len);
-
+    /*
+     * Called with len=0 when the options change. We must inform
+     * the front end in case it needs to know.
+     */
+    if (len == 0) {
+	ldisc_update(ldisc->frontend, ECHOING, EDITING);
+	return;
+    }
     /*
      * Notify the front end that something was pressed, in case
      * it's depending on finding out (e.g. keypress termination for
      * Close On Exit). 
      */
     frontend_keypress(ldisc->frontend);
-
-    if (interactive) {
-        /*
-         * Interrupt a paste from the clipboard, if one was in
-         * progress when the user pressed a key. This is easier than
-         * buffering the current piece of data and saving it until the
-         * terminal has finished pasting, and has the potential side
-         * benefit of permitting a user to cancel an accidental huge
-         * paste.
-         */
-        term_nopaste(ldisc->term);
-    }
 
     /*
      * Less than zero means null terminated special string.
@@ -230,7 +203,7 @@ void ldisc_send(void *handle, const char *buf, int len, int interactive)
                  * configured telnet specials off! This breaks
                  * talkers otherwise.
                  */
-                if (!ldisc->telnet_keyboard)
+                if (!ldisc->cfg->telnet_keyboard)
                     goto default_case;
 		if (c == CTRL('C'))
 		    ldisc->back->special(ldisc->backhandle, TS_IP);
@@ -282,7 +255,7 @@ void ldisc_send(void *handle, const char *buf, int len, int interactive)
 		 *    default clause because of the break.
 		 */
 	      case CTRL('J'):
-		if (ldisc->protocol == PROT_RAW &&
+		if (ldisc->cfg->protocol == PROT_RAW &&
 		    ldisc->buflen > 0 && ldisc->buf[ldisc->buflen - 1] == '\r') {
 		    if (ECHOING)
 			bsb(ldisc, plen(ldisc, ldisc->buf[ldisc->buflen - 1]));
@@ -291,9 +264,9 @@ void ldisc_send(void *handle, const char *buf, int len, int interactive)
 	      case KCTRL('M'):	       /* send with newline */
 		    if (ldisc->buflen > 0)
 			ldisc->back->send(ldisc->backhandle, ldisc->buf, ldisc->buflen);
-		    if (ldisc->protocol == PROT_RAW)
+		    if (ldisc->cfg->protocol == PROT_RAW)
 			ldisc->back->send(ldisc->backhandle, "\r\n", 2);
-		    else if (ldisc->protocol == PROT_TELNET && ldisc->telnet_newline)
+		    else if (ldisc->cfg->protocol == PROT_TELNET && ldisc->cfg->telnet_newline)
 			ldisc->back->special(ldisc->backhandle, TS_EOL);
 		    else
 			ldisc->back->send(ldisc->backhandle, "\r", 1);
@@ -327,27 +300,27 @@ void ldisc_send(void *handle, const char *buf, int len, int interactive)
 	if (len > 0) {
 	    if (ECHOING)
 		c_write(ldisc, buf, len);
-	    if (keyflag && ldisc->protocol == PROT_TELNET && len == 1) {
+	    if (keyflag && ldisc->cfg->protocol == PROT_TELNET && len == 1) {
 		switch (buf[0]) {
 		  case CTRL('M'):
-		    if (ldisc->protocol == PROT_TELNET && ldisc->telnet_newline)
+		    if (ldisc->cfg->protocol == PROT_TELNET && ldisc->cfg->telnet_newline)
 			ldisc->back->special(ldisc->backhandle, TS_EOL);
 		    else
 			ldisc->back->send(ldisc->backhandle, "\r", 1);
 		    break;
 		  case CTRL('?'):
 		  case CTRL('H'):
-		    if (ldisc->telnet_keyboard) {
+		    if (ldisc->cfg->telnet_keyboard) {
 			ldisc->back->special(ldisc->backhandle, TS_EC);
 			break;
 		    }
 		  case CTRL('C'):
-		    if (ldisc->telnet_keyboard) {
+		    if (ldisc->cfg->telnet_keyboard) {
 			ldisc->back->special(ldisc->backhandle, TS_IP);
 			break;
 		    }
 		  case CTRL('Z'):
-		    if (ldisc->telnet_keyboard) {
+		    if (ldisc->cfg->telnet_keyboard) {
 			ldisc->back->special(ldisc->backhandle, TS_SUSP);
 			break;
 		    }

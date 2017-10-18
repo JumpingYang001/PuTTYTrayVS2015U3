@@ -326,8 +326,7 @@ int wc_unescape(char *output, const char *wildcard)
 	    wildcard++;
 	}
     }
-    if (output)
-        *output = '\0';
+    *output = '\0';
     return 1;			       /* it's clean */
 }
 
